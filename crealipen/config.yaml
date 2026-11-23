@@ -6,6 +6,9 @@ url: https://github.com/bmcandy/3d-plotter
 arch:
   - aarch64
   - amd64
+# the HA base image provides its own s6 init; Docker's init wrapper would
+# stop s6 from being PID 1 (s6-overlay-suexec fatal)
+init: false
 startup: services
 ingress: true
 panel_icon: mdi:pen
