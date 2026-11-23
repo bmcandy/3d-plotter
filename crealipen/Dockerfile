@@ -1,5 +1,6 @@
-ARG BUILD_FROM
-FROM $BUILD_FROM
+# BUILD_ARCH is provided by the Supervisor (aarch64, amd64, ...)
+ARG BUILD_ARCH
+FROM ghcr.io/home-assistant/${BUILD_ARCH}-base-debian:bookworm
 
 # Debian base: every dependency has manylinux wheels for aarch64
 RUN apt-get update \

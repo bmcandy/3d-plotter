@@ -21,30 +21,37 @@ cd ../frontend && npm install && npm run dev
 
 The app runs against a `FakeSerial` simulator in dev; no hardware required.
 
-## Deployment (Pi)
+## Deployment (Pi, Home Assistant OS)
 
-1. Create a stable device symlink with a udev rule so the serial device
-   doesn't shuffle across reboots. Find the printer's USB ids with
-   `lsusb`, then:
+The Pi runs Home Assistant OS, so Crealipen deploys as an **app** (formerly
+add-on) built by the Supervisor from this repo (see
+[docs/adr/0004](./docs/adr/0004-ha-app-wrapper-deployment.md)):
 
-   ```sh
-   echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="creality"' \
-     | sudo tee /etc/udev/rules.d/99-creality.rules
-   sudo udevadm control --reload && sudo udevadm trigger
-   ```
+1. Push this repo to GitHub (public).
+2. In HA: **Settings → Apps → Install app → ⋮ → Repositories**, add the repo
+   URL, then install **Crealipen** from the store.
+3. In the app's Configuration: `simulate: true` until the CR-10s is plugged
+   into the Pi; `serial_port` can be left empty (the first `ttyACM*`/`ttyUSB*`
+   device is used automatically).
+4. Start the app and enable **Show in sidebar** — Crealipen opens as a native
+   panel via ingress.
 
-2. Build and run:
+### Generic Docker hosts (non-HAOS)
 
-   ```sh
-   docker compose up -d --build
-   ```
+The standalone container still works elsewhere:
 
-3. Open `http://<pi-ip>:8000`.
+```sh
+docker build -t crealipen .
+docker run -d -p 8000:8000 --device /dev/ttyACM0:/dev/creality crealipen
+```
 
-### Home Assistant sidebar link
+Create a stable udev symlink so the device name doesn't shuffle on reboot:
 
-In HA: Settings → Dashboards → Add dashboard → *Webpage link* (iframe),
-URL `http://<pi-ip>:8000`. The app trusts the LAN; there is no auth.
+```sh
+echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="7523", SYMLINK+="creality"' \
+  | sudo tee /etc/udev/rules.d/99-creality.rules
+sudo udevadm control --reload && sudo udevadm trigger
+```
 
 ## Calibration
 
