@@ -27,14 +27,42 @@ export default function App() {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/api/jobs/${jobId}/ws`);
     wsRef.current = ws;
-    ws.onmessage = (e) => {
-      const data = JSON.parse(e.data);
+    let closed = false;
+    const finish = (data) => {
       setJob((j) => ({ ...j, ...data }));
       if (["done", "failed", "cancelled"].includes(data.status)) {
         setBusy(false);
+        closed = true;
         ws.close();
-      } else {
-        ws.send("poll");
+      }
+    };
+    // if the websocket dies (e.g. proxy without ws support), fall back to polling
+    const poll = async () => {
+      while (!closed) {
+        try {
+          const r = await fetch(`/api/jobs/${jobId}`);
+          if (r.ok) finish(await r.json());
+        } catch {
+          /* backend down; keep trying */
+        }
+        await new Promise((res) => setTimeout(res, 1000));
+      }
+    };
+    ws.onmessage = (e) => {
+      finish(JSON.parse(e.data));
+      if (!closed) ws.send("poll");
+    };
+    ws.onerror = () => {
+      if (!closed) {
+        closed = true;
+        try { ws.close(); } catch { /* already closed */ }
+        poll();
+      }
+    };
+    ws.onclose = () => {
+      if (!closed) {
+        closed = true;
+        poll();
       }
     };
   };
@@ -189,14 +217,19 @@ export default function App() {
         <section className="panel preview" ref={bedRef}
           onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp}>
           {drawing ? (
-            <svg
-              viewBox={`0 0 ${profile ? profile.bed_width : 300} ${profile ? profile.bed_height : 300}`}
-              style={{ background: "#fdf6e3", width: "100%", touchAction: "none" }}
-            >
-              <g transform={`translate(${settings.x}, ${settings.y}) rotate(${settings.rotation}) scale(${settings.scale})`}>
-                <g transform={`scale(1, -1) translate(0, -${drawing.height_px})`} dangerouslySetInnerHTML={{ __html: drawing.svg }} />
-              </g>
-            </svg>
+            <>
+              <svg
+                viewBox={`0 0 ${profile ? profile.bed_width : 300} ${profile ? profile.bed_height : 300}`}
+                style={{ background: "#fdf6e3", width: "100%", touchAction: "none" }}
+              >
+                <g transform={`translate(${settings.x}, ${settings.y}) rotate(${settings.rotation}) scale(${settings.scale})`}>
+                  <g transform={`scale(1, -1) translate(0, -${drawing.height_px})`} dangerouslySetInnerHTML={{ __html: drawing.svg }} />
+                </g>
+              </svg>
+              {!drawing.svg.includes("<path") && (
+                <p className="hint">No outlines found — try lowering the threshold.</p>
+              )}
+            </>
           ) : (
             <p>Upload an image to begin.</p>
           )}

@@ -14,6 +14,8 @@ class JobRunner:
         self._active_job_id: int | None = None
         self._cancel = threading.Event()
         self._lock = threading.Lock()
+        # ADR 0002: a Job never survives a restart; stale ones are failed
+        self.db.fail_stale_jobs()
 
     def busy(self) -> bool:
         return self._active_job_id is not None
@@ -37,8 +39,10 @@ class JobRunner:
 
     def _run(self, job_id: int, gcode: list[str]) -> None:
         self.db.update_job(job_id, status="running", progress=0)
-        sender: MarlinSender = self.sender_factory()
+        sender = None
+        status, error = "done", None
         try:
+            sender = self.sender_factory()
             sender.connect()
             sender.run_gcode(
                 gcode,
@@ -47,13 +51,20 @@ class JobRunner:
                 ),
                 stop=self._cancel.is_set,
             )
-            status = "cancelled" if self._cancel.is_set() else "done"
-            self.db.update_job(job_id, status=status, progress=100)
+            if self._cancel.is_set():
+                status = "cancelled"
         except Exception as exc:
-            self.db.update_job(job_id, status="failed", error=str(exc))
+            status, error = "failed", str(exc)
         finally:
-            sender.close()
+            if sender is not None:
+                sender.close()
+            # release the machine before the terminal status is visible,
+            # so a new Plot is never refused spuriously
             self._active_job_id = None
+        self.db.update_job(
+            job_id, status=status,
+            progress=100 if status != "failed" else None, error=error,
+        )
 
 
 class BusyError(RuntimeError):

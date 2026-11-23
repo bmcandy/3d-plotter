@@ -68,6 +68,41 @@ def test_failed_connect_marks_job_failed():
     assert not runner.busy()
 
 
+def test_failed_sender_factory_marks_job_failed_and_frees_machine():
+    """A sender factory that raises (e.g. missing serial device) must fail
+    the job and release the machine, not wedge it as permanently busy."""
+    from app.db import Database
+    from app.jobs import JobRunner
+
+    def factory():
+        raise IOError("no such device")
+
+    db = Database(":memory:")
+    runner = JobRunner(db, factory)
+    job_id = runner.start(1, ["G28"])
+    import time
+
+    for _ in range(50):
+        if db.get_job(job_id)["status"] != "running":
+            break
+        time.sleep(0.02)
+    job = db.get_job(job_id)
+    assert job["status"] == "failed"
+    assert not runner.busy()  # machine must be usable again
+
+
+def test_stale_jobs_failed_on_startup():
+    """Jobs left pending/running by a restart are failed, per ADR 0002."""
+    from app.db import Database
+    from app.jobs import JobRunner
+
+    db = Database(":memory:")
+    stuck = db.create_job(1)
+    db.update_job(stuck, status="running", progress=40)
+    JobRunner(db, lambda: MarlinSender(FakeSerial()))
+    assert db.get_job(stuck)["status"] == "failed"
+
+
 def test_estop_lifts_pen_and_stops_streaming():
     port = FakeSerial()
     sender = MarlinSender(port)

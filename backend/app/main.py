@@ -175,9 +175,12 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
 
 
 def main():
+    import os
+
     import uvicorn
 
-    uvicorn.run(create_app(), host="0.0.0.0", port=8000)
+    simulate = os.environ.get("CREALIPEN_SIMULATE", "").lower() in ("1", "true", "yes")
+    uvicorn.run(create_app(simulate=simulate), host="0.0.0.0", port=8000)
 
 
 if __name__ == "__main__":

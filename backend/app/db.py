@@ -93,3 +93,13 @@ class Database:
         with self._lock:
             row = self._conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
             return dict(row) if row else None
+
+    def fail_stale_jobs(self) -> int:
+        with self._lock:
+            cur = self._conn.execute(
+                "UPDATE jobs SET status = 'failed', error = 'interrupted by app restart',"
+                " finished_at = datetime('now')"
+                " WHERE status IN ('pending', 'running')"
+            )
+            self._conn.commit()
+            return cur.rowcount
