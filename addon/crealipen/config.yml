@@ -1,0 +1,22 @@
+name: Crealipen
+version: "0.1.0"
+slug: crealipen
+description: Turn uploaded images into pen drawings on a CR-10s pen plotter
+url: https://github.com/andy/3d-plotter
+arch:
+  - aarch64
+  - amd64
+startup: services
+ingress: true
+panel_icon: mdi:pen
+panel_title: Crealipen
+panel_admin: false
+uart: true
+map:
+  - share:rw
+options:
+  simulate: false
+  serial_port: ""
+schema:
+  simulate: bool
+  serial_port: str?

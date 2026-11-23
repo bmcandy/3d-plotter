@@ -36,9 +36,12 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
     def sender_factory() -> MarlinSender:
         if simulate:
             return MarlinSender(FakeSerial())
+        import os
+
         import serial
 
-        port = serial.Serial("/dev/creality", 115200, timeout=1)
+        port = os.environ.get("SERIAL_PORT", "/dev/creality")
+        port = serial.Serial(port, 115200, timeout=1)
         return MarlinSender(port)
 
     app.state.job_runner = JobRunner(db, sender_factory)
