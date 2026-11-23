@@ -2,6 +2,7 @@ import io
 import time
 
 import numpy as np
+import pytest
 from PIL import Image
 from fastapi.testclient import TestClient
 
@@ -45,8 +46,8 @@ def test_generate_gcode_for_drawing(tmp_path):
 
 
 def test_upload_auto_fits_drawing_to_bed(tmp_path):
-    """A large image must land on the bed scaled and centered, not at
-    1 mm/px where it spans far beyond the visible bed."""
+    """A large image must land on the bed sized to 90% and centered,
+    expressed as its max dimension in mm."""
     c = make_client(tmp_path)
     r = c.post(
         "/api/drawings",
@@ -54,10 +55,10 @@ def test_upload_auto_fits_drawing_to_bed(tmp_path):
     )
     body = r.json()
     s = body["settings"]
-    assert s["scale"] < 1.0
-    # centered: drawing width (px * scale) + 2*x == bed width
-    assert abs((3000 * s["scale"]) + 2 * s["x"] - 300) < 1
-    assert abs((3000 * s["scale"]) + 2 * s["y"] - 300) < 1
+    assert s["size_mm"] == pytest.approx(270, abs=1)  # 90% of the 300mm bed
+    # centered: drawing width (px * mm-per-px) + 2*x == bed width
+    mm_per_px = s["size_mm"] / 3000
+    assert abs((3000 * mm_per_px) + 2 * s["x"] - 300) < 1
 
 
 def test_machine_profile_roundtrip(tmp_path):

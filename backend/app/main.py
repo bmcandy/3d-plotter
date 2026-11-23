@@ -55,10 +55,12 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         image_path = data_dir / "images" / f"{uuid.uuid4().hex}.png"
         image_path.parent.mkdir(parents=True, exist_ok=True)
         image_path.write_bytes(raw)
-        # auto-fit: scale the drawing to 90% of the bed and center it
+        # auto-fit: size the drawing to 90% of the bed and center it;
+        # size_mm is the drawing's max dimension in mm on the bed
         profile = profiles.get()
+        max_dim = max(img.width, img.height)
         fit = min(profile.bed_width / img.width, profile.bed_height / img.height) * 0.9
-        settings = {"threshold": threshold, "scale": round(fit, 4),
+        settings = {"threshold": threshold, "size_mm": round(max_dim * fit, 1),
                     "x": round((profile.bed_width - img.width * fit) / 2, 2),
                     "y": round((profile.bed_height - img.height * fit) / 2, 2),
                     "rotation": 0.0, "infill": "none", "spacing": 2.0}
@@ -103,7 +105,7 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
                                         float(settings.get("spacing", 2.0)))
         all_paths = transform_paths(
             outlines + [list(line.coords) for line in infill],
-            scale=float(settings.get("scale", 1.0)),
+            scale=float(settings.get("size_mm", 300.0)) / max(img.width, img.height),
             x=float(settings.get("x", 0.0)),
             y=float(settings.get("y", 0.0)),
             rotation=float(settings.get("rotation", 0.0)),

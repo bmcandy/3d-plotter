@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 
 const EMPTY_SETTINGS = {
   threshold: 128,
-  scale: 1.0,
+  size_mm: 270,
   x: 0,
   y: 0,
   rotation: 0,
@@ -91,11 +91,14 @@ export default function App() {
     setDrawing(body);
   }
 
+  // mm per image pixel for the current size_mm
+  const mmPerPx = drawing ? settings.size_mm / Math.max(drawing.width_px, drawing.height_px) : 0;
+
   async function fitToBed() {
     if (!drawing || !profile) return;
     const fit = Math.min(profile.bed_width / drawing.width_px, profile.bed_height / drawing.height_px) * 0.9;
     updateSettings({
-      scale: fit,
+      size_mm: Math.max(drawing.width_px, drawing.height_px) * fit,
       x: (profile.bed_width - drawing.width_px * fit) / 2,
       y: (profile.bed_height - drawing.height_px * fit) / 2,
     });
@@ -150,12 +153,12 @@ export default function App() {
   function onPointerMove(e) {
     if (!dragRef.current || !profile) return;
     const rect = bedRef.current.getBoundingClientRect();
-    const mmPerPx = profile.bed_width / rect.width;
+    const bedMmPerScreenPx = profile.bed_width / rect.width;
     const d = dragRef.current;
     setSettings((s) => ({
       ...s,
-      x: d.x + (e.clientX - d.startX) * mmPerPx,
-      y: d.y - (e.clientY - d.startY) * mmPerPx,
+      x: d.x + (e.clientX - d.startX) * bedMmPerScreenPx,
+      y: d.y - (e.clientY - d.startY) * bedMmPerScreenPx,
     }));
   }
   function onPointerUp() {
@@ -186,9 +189,9 @@ export default function App() {
                   onChange={(e) => updateSettings({ threshold: +e.target.value })} />
               </label>
               <label>
-                Scale (mm/px): {settings.scale}
-                <input type="range" min="0.1" max="5" step="0.1" value={settings.scale}
-                  onChange={(e) => updateSettings({ scale: +e.target.value })} />
+                Size (mm): {settings.size_mm}
+                <input type="range" min="0" max={profile ? profile.bed_width : 300} step="1" value={settings.size_mm}
+                  onChange={(e) => updateSettings({ size_mm: +e.target.value })} />
               </label>
               <label>
                 Rotation: {settings.rotation}°
@@ -234,7 +237,7 @@ export default function App() {
                 viewBox={`0 0 ${profile ? profile.bed_width : 300} ${profile ? profile.bed_height : 300}`}
                 style={{ background: "#fdf6e3", width: "100%", touchAction: "none" }}
               >
-                <g transform={`translate(${settings.x}, ${settings.y}) rotate(${settings.rotation}) scale(${settings.scale})`}>
+                <g transform={`translate(${settings.x}, ${settings.y}) rotate(${settings.rotation}) scale(${mmPerPx})`}>
                   <g transform={`scale(1, -1) translate(0, -${drawing.height_px})`} dangerouslySetInnerHTML={{ __html: drawing.svg }} />
                 </g>
               </svg>
