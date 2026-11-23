@@ -211,6 +211,7 @@ export default function App() {
                 {job.status} — {job.progress}%
                 {busy && <button onClick={cancel}>Cancel</button>}
               </p>
+              {job.error && <p className="error">{job.error}</p>}
             </>
           )}
         </section>

@@ -160,7 +160,8 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
                 if job is None:
                     await ws.send_json({"error": "job not found"})
                     break
-                await ws.send_json({"status": job["status"], "progress": job["progress"]})
+                await ws.send_json({"status": job["status"], "progress": job["progress"],
+                                    "error": job["error"]})
                 if job["status"] in ("done", "failed", "cancelled"):
                     break
                 await ws.receive_text()  # client pings to poll
