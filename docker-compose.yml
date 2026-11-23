@@ -1,0 +1,14 @@
+services:
+  crealipen:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - crealipen-data:/app/data
+    devices:
+      # stable symlink created by the udev rule (see README)
+      - /dev/creality:/dev/creality
+    restart: unless-stopped
+
+volumes:
+  crealipen-data:
