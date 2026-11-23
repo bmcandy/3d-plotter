@@ -24,9 +24,24 @@ from app.tracing import contours_to_svg, trace_image
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
 
+class StripIngressPath:
+    """If the ingress proxy forwards the /ingress/<slug> prefix instead of
+    stripping it, rewrite it away so routes and static files resolve."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket") and scope["path"].startswith("/ingress/"):
+            parts = scope["path"].split("/", 3)
+            scope["path"] = "/" + parts[3] if len(parts) > 3 else "/"
+        await self.app(scope, receive, send)
+
+
 def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastAPI:
     data_dir = Path(data_dir)
     app = FastAPI(title="Crealipen")
+    app.add_middleware(StripIngressPath)
     db = Database(data_dir / "crealipen.db")
     profiles = ProfileStore(data_dir / "machine-profile.json")
     app.state.db = db

@@ -19,13 +19,15 @@ export default function App() {
   const wsRef = useRef(null);
 
   useEffect(() => {
-    fetch("/api/machine/profile").then((r) => r.json()).then(setProfile);
+    fetch("api/machine/profile").then((r) => r.json()).then(setProfile);
   }, []);
 
   const watchJob = (jobId) => {
     if (wsRef.current) wsRef.current.close();
     const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/api/jobs/${jobId}/ws`);
+    // relative to the page path so it works under HA ingress
+    const base = location.pathname.replace(/\/+$/, "");
+    const ws = new WebSocket(`${proto}://${location.host}${base}/api/jobs/${jobId}/ws`);
     wsRef.current = ws;
     let closed = false;
     const finish = (data) => {
@@ -40,7 +42,7 @@ export default function App() {
     const poll = async () => {
       while (!closed) {
         try {
-          const r = await fetch(`/api/jobs/${jobId}`);
+          const r = await fetch(`api/jobs/${jobId}`);
           if (r.ok) finish(await r.json());
         } catch {
           /* backend down; keep trying */
@@ -72,7 +74,7 @@ export default function App() {
     if (!file) return;
     const form = new FormData();
     form.append("image", file);
-    const r = await fetch("/api/drawings", { method: "POST", body: form });
+    const r = await fetch("api/drawings", { method: "POST", body: form });
     const body = await r.json();
     setDrawing(body);
     setSettings({ ...EMPTY_SETTINGS, ...body.settings });
@@ -82,7 +84,7 @@ export default function App() {
     const s = { ...settings, ...next };
     setSettings(s);
     if (!drawing) return;
-    const r = await fetch(`/api/drawings/${drawing.id}`, {
+    const r = await fetch(`api/drawings/${drawing.id}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(s),
@@ -106,8 +108,8 @@ export default function App() {
 
   async function plot() {
     setBusy(true);
-    await fetch(`/api/drawings/${drawing.id}/gcode`, { method: "POST" });
-    const r = await fetch("/api/jobs", {
+    await fetch(`api/drawings/${drawing.id}/gcode`, { method: "POST" });
+    const r = await fetch("api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ drawing_id: drawing.id }),
@@ -123,11 +125,11 @@ export default function App() {
   }
 
   async function cancel() {
-    if (job) await fetch(`/api/jobs/${job.id}/cancel`, { method: "POST" });
+    if (job) await fetch(`api/jobs/${job.id}/cancel`, { method: "POST" });
   }
 
   async function estop() {
-    await fetch("/api/machine/estop", { method: "POST" });
+    await fetch("api/machine/estop", { method: "POST" });
     setBusy(false);
     if (job) setJob((j) => ({ ...j, status: "cancelled" }));
   }
@@ -135,7 +137,7 @@ export default function App() {
   async function saveProfile(next) {
     const p = { ...profile, ...next };
     setProfile(p);
-    await fetch("/api/machine/profile", {
+    await fetch("api/machine/profile", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(p),
