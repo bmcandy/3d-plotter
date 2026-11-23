@@ -36,6 +36,20 @@ def test_y_axis_flipped_to_math_orientation():
     assert min(ys) == 50 and max(ys) == 99
 
 
+def test_trace_scales_back_to_original_pixels():
+    # images larger than MAX_DIMENSION are traced downscaled, but the
+    # returned paths must be in original pixel coordinates
+    size = 3000
+    img = Image.new("L", (size, size), 255)
+    px = np.array(img)
+    px[600:2400, 600:2400] = 0
+    paths = trace_image(Image.fromarray(px), threshold=128)
+    xs = [p[0] for path in paths for p in path]
+    ys = [p[1] for path in paths for p in path]
+    assert max(xs) > 2000  # original space, not the 2000px downscaled space
+    assert min(xs) > 500 and max(xs) < 2500
+
+
 def test_contours_to_svg_contains_path_and_viewbox():
     paths = trace_image(black_square_image(), threshold=128)
     svg = contours_to_svg(paths, width=100, height=100)

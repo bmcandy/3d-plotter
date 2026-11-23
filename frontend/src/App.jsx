@@ -91,6 +91,16 @@ export default function App() {
     setDrawing(body);
   }
 
+  async function fitToBed() {
+    if (!drawing || !profile) return;
+    const fit = Math.min(profile.bed_width / drawing.width_px, profile.bed_height / drawing.height_px) * 0.9;
+    updateSettings({
+      scale: fit,
+      x: (profile.bed_width - drawing.width_px * fit) / 2,
+      y: (profile.bed_height - drawing.height_px * fit) / 2,
+    });
+  }
+
   async function plot() {
     setBusy(true);
     await fetch(`/api/drawings/${drawing.id}/gcode`, { method: "POST" });
@@ -202,6 +212,7 @@ export default function App() {
                 </label>
               )}
               <button className="primary" disabled={busy} onClick={plot}>Plot</button>
+              <button onClick={fitToBed} style={{ width: "100%", marginTop: "0.5rem" }}>Fit to bed</button>
             </>
           )}
           {job && (

@@ -22,15 +22,23 @@ def _prepare(img: Image.Image) -> Image.Image:
 
 
 def trace_image(img: Image.Image, threshold: int, min_area: float = 25.0) -> list[list[tuple[float, float]]]:
-    arr = np.array(_prepare(img))
+    original = img.convert("L")
+    prepared = _prepare(original)
+    # paths are traced on the downscaled image but returned in original
+    # pixel coordinates, so the SVG viewBox and mm/px scale stay consistent
+    px_scale = original.width / prepared.width
+    arr = np.array(prepared)
     _, binary = cv2.threshold(arr, threshold, 255, cv2.THRESH_BINARY_INV)
     contours, _ = cv2.findContours(binary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_SIMPLE)
     height = arr.shape[0]
     paths = []
     for contour in contours:
-        if cv2.contourArea(contour) < min_area:
+        if cv2.contourArea(contour) < min_area / (px_scale * px_scale):
             continue
-        pts = [(float(p[0][0]), float(height - 1 - p[0][1])) for p in contour]
+        pts = [
+            (float(p[0][0] * px_scale), float((height - 1 - p[0][1]) * px_scale))
+            for p in contour
+        ]
         if pts[0] != pts[-1]:
             pts.append(pts[0])  # close the ring for polygonize/G-code
         paths.append(pts)

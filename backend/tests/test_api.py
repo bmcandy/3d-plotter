@@ -8,9 +8,10 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 
 
-def png_bytes():
-    px = np.full((100, 100), 255, dtype=np.uint8)
-    px[20:80, 20:80] = 0
+def png_bytes(size=100):
+    px = np.full((size, size), 255, dtype=np.uint8)
+    lo, hi = size // 5, size - size // 5
+    px[lo:hi, lo:hi] = 0
     buf = io.BytesIO()
     Image.fromarray(px).save(buf, format="PNG")
     return buf.getvalue()
@@ -41,6 +42,22 @@ def test_generate_gcode_for_drawing(tmp_path):
     r = c.post(f"/api/drawings/{d['id']}/gcode")
     assert r.status_code == 200
     assert "G28" in r.json()["gcode"]
+
+
+def test_upload_auto_fits_drawing_to_bed(tmp_path):
+    """A large image must land on the bed scaled and centered, not at
+    1 mm/px where it spans far beyond the visible bed."""
+    c = make_client(tmp_path)
+    r = c.post(
+        "/api/drawings",
+        files={"image": ("big.png", png_bytes(size=3000), "image/png")},
+    )
+    body = r.json()
+    s = body["settings"]
+    assert s["scale"] < 1.0
+    # centered: drawing width (px * scale) + 2*x == bed width
+    assert abs((3000 * s["scale"]) + 2 * s["x"] - 300) < 1
+    assert abs((3000 * s["scale"]) + 2 * s["y"] - 300) < 1
 
 
 def test_machine_profile_roundtrip(tmp_path):

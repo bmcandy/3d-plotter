@@ -55,7 +55,12 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         image_path = data_dir / "images" / f"{uuid.uuid4().hex}.png"
         image_path.parent.mkdir(parents=True, exist_ok=True)
         image_path.write_bytes(raw)
-        settings = {"threshold": threshold, "scale": 1.0, "x": 0.0, "y": 0.0,
+        # auto-fit: scale the drawing to 90% of the bed and center it
+        profile = profiles.get()
+        fit = min(profile.bed_width / img.width, profile.bed_height / img.height) * 0.9
+        settings = {"threshold": threshold, "scale": round(fit, 4),
+                    "x": round((profile.bed_width - img.width * fit) / 2, 2),
+                    "y": round((profile.bed_height - img.height * fit) / 2, 2),
                     "rotation": 0.0, "infill": "none", "spacing": 2.0}
         drawing_id = db.create_drawing(
             name=image.filename or "drawing", image_path=str(image_path),
