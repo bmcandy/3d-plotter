@@ -2,7 +2,7 @@ name: Crealipen
 version: "0.1.0"
 slug: crealipen
 description: Turn uploaded images into pen drawings on a CR-10s pen plotter
-url: https://github.com/andy/3d-plotter
+url: https://github.com/bmcandy/3d-plotter
 arch:
   - aarch64
   - amd64
