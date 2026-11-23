@@ -59,7 +59,7 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         port = serial.Serial(port, 115200, timeout=1)
         return MarlinSender(port)
 
-    app.state.job_runner = JobRunner(db, sender_factory)
+    app.state.job_runner = JobRunner(db, sender_factory, safe_z=profiles.get().pen_up_z)
 
     @app.post("/api/drawings")
     async def upload_drawing(image: UploadFile, threshold: int = 128):

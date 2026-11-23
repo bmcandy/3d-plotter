@@ -103,7 +103,31 @@ def test_stale_jobs_failed_on_startup():
     assert db.get_job(stuck)["status"] == "failed"
 
 
-def test_estop_lifts_pen_and_stops_streaming():
+def test_error_mid_job_sends_m112_before_raising():
+    """If a command fails mid-job (e.g. homing grinds forever and times
+    out), the machine must be halted with M112 — motion must not run away."""
+    port = FakeSerial(responses={"G0 X5": "Error:boom"})
+    sender = MarlinSender(port)
+    sender.connect()
+    with pytest.raises(SenderError):
+        sender.run_gcode(["G0 X5", "G0 X6"], on_progress=lambda i, n: None, stop=lambda: False)
+    assert port.written[-1] == "M112"
+
+
+def test_timeout_mid_job_sends_m112_before_raising():
+    class DeafPort(FakeSerial):
+        def readline(self):
+            return ""  # never responds
+
+    port = DeafPort()
+    sender = MarlinSender(port, timeout=0.2)
+    sender.connect()
+    with pytest.raises(SenderError):
+        sender.run_gcode(["G28 X Y"], on_progress=lambda i, n: None, stop=lambda: False)
+    assert port.written[-1] == "M112"
+
+
+def test_cancel_lifts_pen_to_safe_z():
     port = FakeSerial()
     sender = MarlinSender(port)
     sender.connect()
@@ -113,8 +137,11 @@ def test_estop_lifts_pen_and_stops_streaming():
         calls.append(1)
         return len(calls) > 3
 
-    lines = [f"G0 X{i}" for i in range(100)]
-    sender.run_gcode(lines, on_progress=lambda i, n: None, stop=stop)
-    # after stop triggers, the pen must be lifted as the last move
-    assert port.written[-1] == "G0 Z5"
+    sender.run_gcode(
+        [f"G0 X{i}" for i in range(100)],
+        on_progress=lambda i, n: None,
+        stop=stop,
+        safe_z=7.5,
+    )
+    assert port.written[-1] == "G0 Z7.5"
     assert len(port.written) < 100

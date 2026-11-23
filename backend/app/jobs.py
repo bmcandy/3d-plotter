@@ -8,9 +8,10 @@ from app.sender import MarlinSender
 
 
 class JobRunner:
-    def __init__(self, db: Database, sender_factory):
+    def __init__(self, db: Database, sender_factory, safe_z: float = 5.0):
         self.db = db
         self.sender_factory = sender_factory  # () -> MarlinSender
+        self.safe_z = safe_z  # pen-up Z, used for cancel/estop lifts
         self._active_job_id: int | None = None
         self._cancel = threading.Event()
         self._lock = threading.Lock()
@@ -50,6 +51,7 @@ class JobRunner:
                     job_id, status="running", progress=int(100 * i / n)
                 ),
                 stop=self._cancel.is_set,
+                safe_z=self.safe_z,
             )
             if self._cancel.is_set():
                 status = "cancelled"

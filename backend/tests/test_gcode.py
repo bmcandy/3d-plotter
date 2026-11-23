@@ -22,8 +22,24 @@ def test_gcode_homes_and_disables_steppers():
     lines = generate_gcode([[(0, 0), (10, 10)]], PROFILE)
     assert lines[0] == "G21"
     assert "G90" in lines
-    assert "G28" in lines
+    assert "G28 X Y" in lines
+    assert "G28 Z" in lines
     assert lines[-1] == "M84"
+
+
+def test_pen_is_lifted_before_any_motion():
+    """The pen may be resting on the paper; a relative lift must come
+    before homing, and homing must not drag the pen (no plain G28)."""
+    lines = generate_gcode([[(0, 0), (10, 10)]], PROFILE)
+    lift_idx = next(i for i, l in enumerate(lines) if l.startswith("G1 Z7"))  # 5-0+2
+    home_idx = next(i for i, l in enumerate(lines) if l.startswith("G28"))
+    assert lift_idx < home_idx
+    assert "G28" not in lines  # never a bare G28 (would home with pen down)
+    assert lines[lift_idx - 1] == "G91"  # lift is relative
+    # after homing, the pen goes to the pen-up position before any XY travel
+    z_up_idx = next(i for i, l in enumerate(lines) if l == "G0 Z5")
+    first_xy = next(i for i, l in enumerate(lines) if l.startswith("G0 X"))
+    assert z_up_idx < first_xy
 
 
 def test_pen_down_before_draw_pen_up_for_travel():

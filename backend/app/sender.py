@@ -40,13 +40,21 @@ class MarlinSender:
             # "echo:busy ..." and other chatter: keep waiting
         raise SenderError(f"timeout waiting for ok on {line!r}")
 
-    def run_gcode(self, lines: list[str], on_progress, stop) -> None:
+    def run_gcode(self, lines: list[str], on_progress, stop, safe_z: float = 5.0) -> None:
         """Stream lines. `stop()` is polled between lines; when it returns
-        True the stream halts and the pen is lifted (safe Z)."""
+        True the stream halts and the pen is lifted (safe Z). On any error
+        the machine is halted with M112 so motion can't run away."""
         total = len(lines)
-        for i, line in enumerate(lines):
-            if stop():
-                self.send_line("G0 Z5")  # lift pen
-                return
-            self.send_line(line)
-            on_progress(i + 1, total)
+        try:
+            for i, line in enumerate(lines):
+                if stop():
+                    self.send_line(f"G0 Z{safe_z:g}")  # lift pen
+                    return
+                self.send_line(line)
+                on_progress(i + 1, total)
+        except Exception:
+            try:
+                self.port.write("M112")  # emergency stop: kill all motion
+            except Exception:
+                pass  # port is dead too; nothing more we can do
+            raise
