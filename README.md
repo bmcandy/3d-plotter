@@ -5,6 +5,8 @@ mounted in place of the extruder) over USB serial. Designed to run on a
 Raspberry Pi alongside Home Assistant. See [GLOSSARY.md](./GLOSSARY.md) for
 domain language and [docs/adr/](./docs/adr/) for key decisions.
 
+[![Add repository to Home Assistant](https://my.home-assistant.io/badges/addon_repository.svg)](https://my.home-assistant.io/redirect/addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fbmcandy%2F3d-plotter)
+
 ## Layout
 
 - `backend/` — Python FastAPI app (tracing, infill, G-code, Marlin sender, jobs)
