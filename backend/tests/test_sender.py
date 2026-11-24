@@ -162,6 +162,28 @@ def test_stale_jobs_failed_on_startup():
     assert db.get_job(stuck)["status"] == "failed"
 
 
+def test_timeout_resends_command_and_recovers():
+    """A lost ok (serial corruption) must be recovered by resending the
+    command — moves are idempotent for a pen plotter."""
+    port = FakeSerial(responses={"G28": [[], ["ok"]]})  # first attempt: silence
+    port.open()
+    sender = MarlinSender(port, timeout=0.3)
+    sender.send_line("G28")
+    assert port.written == ["G28", "G28"]
+
+
+def test_resend_exhaustion_fails_without_m112():
+    """When the printer is truly unreachable, the job fails cleanly —
+    Crealipen must never kill the machine on its own."""
+    port = FakeSerial(responses={"G28": [[], [], []]})
+    port.open()
+    sender = MarlinSender(port, timeout=0.3)
+    with pytest.raises(SenderError):
+        sender.send_line("G28")
+    assert port.written == ["G28", "G28", "G28"]
+    assert "M112" not in port.written
+
+
 def test_busy_chatter_extends_deadline():
     """Long homing sequences emit 'echo:busy' for minutes; each received
     line proves liveness and must extend the ok deadline."""
@@ -171,28 +193,68 @@ def test_busy_chatter_extends_deadline():
     sender.send_line("G28")  # must not raise
 
 
-def test_error_mid_job_sends_m112_before_raising():
-    """If a command fails mid-job (e.g. homing grinds forever and times
-    out), the machine must be halted with M112 — motion must not run away."""
-    port = FakeSerial(responses={"G0 X5": "Error:boom"})
-    sender = MarlinSender(port)
-    sender.connect()
-    with pytest.raises(SenderError):
-        sender.run_gcode(["G0 X5", "G0 X6"], on_progress=lambda i, n: None, stop=lambda: False)
-    assert port.written[-1] == "M112"
+class SilentUntilNPort:
+    """Silent for the first N-1 writes, then answers ok (lost-ok simulation)."""
+
+    def __init__(self, respond_on_write: int):
+        self.respond_on = respond_on_write
+        self.writes = 0
+        self.written: list[str] = []
+        self._pending_ok = False
+        self._open = False
+
+    @property
+    def is_open(self) -> bool:
+        return self._open
+
+    def open(self) -> None:
+        self._open = True
+
+    def close(self) -> None:
+        self._open = False
+
+    def write(self, data: bytes | str) -> None:
+        self.writes += 1
+        self.written.append(data.decode().strip())
+        if self.writes >= self.respond_on:
+            self._pending_ok = True
+
+    def readline(self) -> str:
+        if self._pending_ok:
+            self._pending_ok = False
+            return "ok"
+        return ""
 
 
-def test_timeout_mid_job_sends_m112_before_raising():
-    class DeafPort(FakeSerial):
-        def readline(self):
-            return ""  # never responds
-
-    port = DeafPort()
+def test_timeout_resends_command_and_recovers():
+    """A lost ok (serial corruption) must be recovered by resending the
+    command — moves are idempotent for a pen plotter."""
+    port = SilentUntilNPort(respond_on_write=2)  # first attempt: silence
     port.open()
-    sender = MarlinSender(port, timeout=0.2)
+    sender = MarlinSender(port, timeout=0.3)
+    sender.send_line("G28")
+    assert port.written == ["G28", "G28"]
+
+
+def test_resend_exhaustion_fails_without_m112():
+    """When the printer is truly unreachable, the job fails cleanly —
+    Crealipen must never kill the machine on its own."""
+    port = SilentUntilNPort(respond_on_write=99)
+    port.open()
+    sender = MarlinSender(port, timeout=0.3)
     with pytest.raises(SenderError):
-        sender.run_gcode(["G28 X Y"], on_progress=lambda i, n: None, stop=lambda: False)
-    assert port.written[-1] == "M112"
+        sender.send_line("G28")
+    assert port.written == ["G28", "G28", "G28"]
+    assert "M112" not in port.written
+
+
+def test_printer_error_raises_without_m112():
+    port = FakeSerial(responses={"G1 X1": "Error:boom"})
+    port.open()
+    sender = MarlinSender(port)
+    with pytest.raises(SenderError):
+        sender.send_line("G1 X1")
+    assert "M112" not in port.written
 
 
 def test_cancel_lifts_pen_to_safe_z():
