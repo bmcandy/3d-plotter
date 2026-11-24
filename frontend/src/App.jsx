@@ -275,6 +275,11 @@ export default function App() {
                 <input type="number" step="100" value={profile.travel_feed}
                   onChange={(e) => saveProfile({ travel_feed: +e.target.value })} />
               </label>
+              <label>
+                Initialization G-code (run after the automatic pen lift):
+                <textarea rows="4" value={profile.init_gcode} className="gcode"
+                  onChange={(e) => saveProfile({ init_gcode: e.target.value })} />
+              </label>
             </>
           )}
         </section>

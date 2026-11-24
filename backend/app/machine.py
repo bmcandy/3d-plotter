@@ -14,6 +14,9 @@ class MachineProfile(BaseModel):
     pen_down_z: float = 0.0
     travel_feed: float = 3000.0
     draw_feed: float = 1500.0
+    # homing/initialization commands, run after the automatic pen lift;
+    # one G-code command per line
+    init_gcode: str = "G28 X Y\nG28 Z"
 
 
 class ProfileStore:

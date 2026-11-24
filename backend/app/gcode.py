@@ -67,9 +67,9 @@ def generate_gcode(
     paths: list[list[tuple[float, float]]],
     profile: MachineProfile,
 ) -> list[str]:
-    # Pen-safe initialization: lift the pen with a relative move before any
-    # other motion (it may be resting on the paper), then home X/Y and Z
-    # separately — a plain G28 would drag the pen across the paper.
+    # Pen-safe preamble: lift the pen with a relative move before any other
+    # motion (it may be resting on the paper). The homing strategy itself is
+    # user-configurable via the machine profile.
     lift = profile.pen_up_z - profile.pen_down_z + 2.0
     lines = [
         "G21",
@@ -77,10 +77,9 @@ def generate_gcode(
         "G91",
         f"G1 Z{lift:g} F600",
         "G90",
-        "G28 X Y",
-        "G28 Z",
-        f"G0 Z{profile.pen_up_z:g} F{profile.travel_feed:g}",
     ]
+    lines += [line.strip() for line in profile.init_gcode.splitlines() if line.strip()]
+    lines.append(f"G0 Z{profile.pen_up_z:g} F{profile.travel_feed:g}")
     for path in order_paths(_clip_to_bed(paths, profile)):
         x0, y0 = path[0]
         lines.append(f"G0 Z{profile.pen_up_z:g}")

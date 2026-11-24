@@ -27,6 +27,22 @@ def test_gcode_homes_and_disables_steppers():
     assert lines[-1] == "M84"
 
 
+def test_custom_init_gcode_is_used_verbatim():
+    profile = MachineProfile(
+        bed_width=300, bed_height=300, pen_up_z=5.0, pen_down_z=0.0,
+        travel_feed=3000, draw_feed=1500,
+        init_gcode="G28\nG0 X150 Y150",
+    )
+    lines = generate_gcode([[(0, 0), (10, 10)]], profile)
+    assert "G28" in lines          # custom init used as-is
+    assert "G0 X150 Y150" in lines
+    assert "G28 X Y" not in lines  # default init not appended
+    # the safety lift still precedes the custom init
+    lift_idx = next(i for i, l in enumerate(lines) if l.startswith("G1 Z"))
+    init_idx = lines.index("G28")
+    assert lift_idx < init_idx
+
+
 def test_pen_is_lifted_before_any_motion():
     """The pen may be resting on the paper; a relative lift must come
     before homing, and homing must not drag the pen (no plain G28)."""
