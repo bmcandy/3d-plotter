@@ -12,6 +12,7 @@ const EMPTY_SETTINGS = {
 
 export default function App() {
   const [drawing, setDrawing] = useState(null);
+  const [drawings, setDrawings] = useState([]);
   const [settings, setSettings] = useState(EMPTY_SETTINGS);
   const [profile, setProfile] = useState(null);
   const [job, setJob] = useState(null);
@@ -20,7 +21,16 @@ export default function App() {
 
   useEffect(() => {
     fetch("api/machine/profile").then((r) => r.json()).then(setProfile);
+    fetch("api/drawings").then((r) => r.json()).then(setDrawings);
   }, []);
+
+  async function openDrawing(id) {
+    const r = await fetch(`api/drawings/${id}`);
+    if (!r.ok) return;
+    const body = await r.json();
+    setDrawing(body);
+    setSettings({ ...EMPTY_SETTINGS, ...body.settings });
+  }
 
   const watchJob = (jobId) => {
     if (wsRef.current) wsRef.current.close();
@@ -78,6 +88,7 @@ export default function App() {
     const body = await r.json();
     setDrawing(body);
     setSettings({ ...EMPTY_SETTINGS, ...body.settings });
+    setDrawings(await (await fetch("api/drawings")).json());
   }
 
   async function updateSettings(next) {
@@ -180,6 +191,18 @@ export default function App() {
         <section className="panel">
           <h2>1. Upload</h2>
           <input type="file" accept="image/*" onChange={upload} />
+          {drawings.length > 0 && (
+            <div style={{ marginTop: "1rem" }}>
+              <h3 style={{ margin: "0 0 0.25rem" }}>Saved drawings</h3>
+              <ul className="drawing-list">
+                {drawings.map((d) => (
+                  <li key={d.id}>
+                    <button onClick={() => openDrawing(d.id)}>{d.name}</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {drawing && (
             <h2 style={{ marginTop: "1rem" }}>2. Configure</h2>
           )}

@@ -99,6 +99,10 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         return {"id": drawing_id, "svg": svg, "settings": settings,
                 "width_px": img.width, "height_px": img.height}
 
+    @app.get("/api/drawings")
+    async def list_drawings():
+        return db.list_drawings()
+
     @app.get("/api/drawings/{drawing_id}")
     async def get_drawing(drawing_id: int):
         drawing = db.get_drawing(drawing_id)

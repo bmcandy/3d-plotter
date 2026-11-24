@@ -34,6 +34,42 @@ def test_upload_traces_to_svg(tmp_path):
     assert body["id"] > 0
 
 
+def test_list_drawings_returns_metadata_without_svg(tmp_path):
+    c = make_client(tmp_path)
+    d1 = c.post(
+        "/api/drawings",
+        files={"image": ("first.png", png_bytes(), "image/png")},
+    ).json()
+    d2 = c.post(
+        "/api/drawings",
+        files={"image": ("second.png", png_bytes(), "image/png")},
+    ).json()
+    r = c.get("/api/drawings")
+    assert r.status_code == 200
+    rows = r.json()
+    assert [row["id"] for row in rows] == [d1["id"], d2["id"]]
+    assert [row["name"] for row in rows] == ["first.png", "second.png"]
+    for row in rows:
+        assert row["width_px"] == 100
+        assert row["height_px"] == 100
+        assert "settings" in row
+        assert "svg" not in row
+
+
+def test_get_drawing_returns_full_drawing_for_reopen(tmp_path):
+    c = make_client(tmp_path)
+    d = c.post(
+        "/api/drawings",
+        files={"image": ("test.png", png_bytes(), "image/png")},
+    ).json()
+    r = c.get(f"/api/drawings/{d['id']}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["svg"].startswith("<svg")
+    assert body["settings"]["size_mm"] > 0
+    assert body["width_px"] == 100
+
+
 def test_generate_gcode_for_drawing(tmp_path):
     c = make_client(tmp_path)
     d = c.post(
