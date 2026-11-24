@@ -5,6 +5,8 @@ mounted in place of the extruder) over USB serial. Designed to run on a
 Raspberry Pi alongside Home Assistant. See [GLOSSARY.md](./GLOSSARY.md) for
 domain language and [docs/adr/](./docs/adr/) for key decisions.
 
+[![Add repository to Home Assistant](https://my.home-assistant.io/badges/addon_repository.svg)](https://my.home-assistant.io/redirect/addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fbmcandy%2F3d-plotter)
+
 ## Layout
 
 - `backend/` — Python FastAPI app (tracing, infill, G-code, Marlin sender, jobs)
@@ -39,7 +41,11 @@ add-on) built by the Supervisor from this repo (see
 
 1. Push this repo to GitHub (public).
 2. In HA: **Settings → Apps → Install app → ⋮ → Repositories**, add the repo
-   URL, then install **Crealipen** from the store.
+   URL, then install **Crealipen** from the store. The app image is built
+   and published to GHCR by CI on every merge to `main`
+   ([ADR 0005](./docs/adr/0005-prebuilt-ghcr-images.md)); the Supervisor
+   pulls the image tagged with the app version, so an update appears in HA
+   whenever that version increases.
 3. In the app's Configuration: `simulate: true` until the CR-10s is plugged
    into the Pi; `serial_port` can be left empty (the first `ttyACM*`/`ttyUSB*`
    device is used automatically).
