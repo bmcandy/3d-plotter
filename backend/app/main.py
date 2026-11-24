@@ -38,6 +38,13 @@ class StripIngressPath:
         await self.app(scope, receive, send)
 
 
+def _spacing_px(settings: dict, img: Image.Image) -> float:
+    """Infill spacing is specified in mm; convert to image pixels using the
+    drawing's current mm-per-pixel so physical spacing is exact."""
+    mm_per_px = float(settings.get("size_mm", 300.0)) / max(img.width, img.height)
+    return float(settings.get("spacing", 2.0)) / mm_per_px
+
+
 def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastAPI:
     import logging
 
@@ -118,7 +125,7 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         img = Image.open(drawing["image_path"])
         paths = trace_image(img, threshold=int(settings.get("threshold", 128)))
         outlines, infill = apply_infill(paths, settings.get("infill", "none"),
-                                        float(settings.get("spacing", 2.0)))
+                                        _spacing_px(settings, img))
         svg = contours_to_svg(outlines + [list(line.coords) for line in infill],
                               width=img.width, height=img.height)
         db.update_drawing(drawing_id, svg=svg, settings=settings)
@@ -134,7 +141,7 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         img = Image.open(drawing["image_path"])
         paths = trace_image(img, threshold=int(settings.get("threshold", 128)))
         outlines, infill = apply_infill(paths, settings.get("infill", "none"),
-                                        float(settings.get("spacing", 2.0)))
+                                        _spacing_px(settings, img))
         all_paths = transform_paths(
             outlines + [list(line.coords) for line in infill],
             scale=float(settings.get("size_mm", 300.0)) / max(img.width, img.height),

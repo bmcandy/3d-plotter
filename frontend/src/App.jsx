@@ -234,7 +234,7 @@ export default function App() {
               </label>
               {settings.infill !== "none" && (
                 <label>
-                  Spacing: {settings.spacing} px
+                  Spacing: {settings.spacing} mm
                   <input type="range" min="0.5" max="10" step="0.5" value={settings.spacing}
                     onChange={(e) => updateSettings({ spacing: +e.target.value })} />
                 </label>

@@ -1,5 +1,7 @@
 import io
 import time
+from collections import Counter
+import re
 
 import numpy as np
 import pytest
@@ -95,6 +97,25 @@ def test_upload_auto_fits_drawing_to_bed(tmp_path):
     # centered: drawing width (px * mm-per-px) + 2*x == bed width
     mm_per_px = s["size_mm"] / 3000
     assert abs((3000 * mm_per_px) + 2 * s["x"] - 300) < 1
+
+
+def test_infill_spacing_is_interpreted_as_mm(tmp_path):
+    """Spacing is physical: a 100px image drawn at 50mm is 0.5 mm/px, so a
+    2mm spacing must come out as 4px in the traced SVG."""
+    c = make_client(tmp_path)
+    d = c.post(
+        "/api/drawings",
+        files={"image": ("test.png", png_bytes(size=100), "image/png")},
+    ).json()
+    r = c.put(
+        f"/api/drawings/{d['id']}",
+        json={"threshold": 128, "size_mm": 50.0, "x": 0.0, "y": 0.0,
+              "rotation": 0.0, "infill": "hatch", "spacing": 2.0},
+    )
+    svg = r.json()["svg"]
+    ys = sorted({round(float(m), 3) for m in re.findall(r"M\s+[\d.]+\s+([\d.]+)", svg)})
+    diffs = [round(b - a, 3) for a, b in zip(ys, ys[1:]) if b - a > 0.5]
+    assert Counter(diffs).most_common(1)[0][0] == pytest.approx(4.0, abs=0.2)
 
 
 def test_machine_profile_roundtrip(tmp_path):
