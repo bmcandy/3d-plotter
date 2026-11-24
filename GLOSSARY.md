@@ -35,6 +35,12 @@ _Avoid_: print, task, queue item
 To execute a Drawing's G-code on the machine, producing a pen drawing.
 _Avoid_: print, draw (ambiguous with tracing)
 
+**Estimate**:
+The predicted duration of a Job, computed from its G-code at constant
+velocity (move distance divided by feed rate, no acceleration model). Shown
+before plotting and, during a Job, as time remaining.
+_Avoid_: ETA, forecast
+
 **Sender**:
 The minimal Marlin serial client that streams G-code lines and waits for `ok`
 acknowledgements. Owns the serial port exclusively.

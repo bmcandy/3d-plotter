@@ -1,5 +1,7 @@
 import io
 import time
+from collections import Counter
+import re
 
 import numpy as np
 import pytest
@@ -34,6 +36,42 @@ def test_upload_traces_to_svg(tmp_path):
     assert body["id"] > 0
 
 
+def test_list_drawings_returns_metadata_without_svg(tmp_path):
+    c = make_client(tmp_path)
+    d1 = c.post(
+        "/api/drawings",
+        files={"image": ("first.png", png_bytes(), "image/png")},
+    ).json()
+    d2 = c.post(
+        "/api/drawings",
+        files={"image": ("second.png", png_bytes(), "image/png")},
+    ).json()
+    r = c.get("/api/drawings")
+    assert r.status_code == 200
+    rows = r.json()
+    assert [row["id"] for row in rows] == [d1["id"], d2["id"]]
+    assert [row["name"] for row in rows] == ["first.png", "second.png"]
+    for row in rows:
+        assert row["width_px"] == 100
+        assert row["height_px"] == 100
+        assert "settings" in row
+        assert "svg" not in row
+
+
+def test_get_drawing_returns_full_drawing_for_reopen(tmp_path):
+    c = make_client(tmp_path)
+    d = c.post(
+        "/api/drawings",
+        files={"image": ("test.png", png_bytes(), "image/png")},
+    ).json()
+    r = c.get(f"/api/drawings/{d['id']}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["svg"].startswith("<svg")
+    assert body["settings"]["size_mm"] > 0
+    assert body["width_px"] == 100
+
+
 def test_generate_gcode_for_drawing(tmp_path):
     c = make_client(tmp_path)
     d = c.post(
@@ -43,6 +81,16 @@ def test_generate_gcode_for_drawing(tmp_path):
     r = c.post(f"/api/drawings/{d['id']}/gcode")
     assert r.status_code == 200
     assert "G28" in r.json()["gcode"]
+
+
+def test_gcode_response_includes_estimate(tmp_path):
+    c = make_client(tmp_path)
+    d = c.post(
+        "/api/drawings",
+        files={"image": ("test.png", png_bytes(), "image/png")},
+    ).json()
+    r = c.post(f"/api/drawings/{d['id']}/gcode")
+    assert r.json()["estimated_seconds"] > 0
 
 
 def test_upload_auto_fits_drawing_to_bed(tmp_path):
@@ -59,6 +107,25 @@ def test_upload_auto_fits_drawing_to_bed(tmp_path):
     # centered: drawing width (px * mm-per-px) + 2*x == bed width
     mm_per_px = s["size_mm"] / 3000
     assert abs((3000 * mm_per_px) + 2 * s["x"] - 300) < 1
+
+
+def test_infill_spacing_is_interpreted_as_mm(tmp_path):
+    """Spacing is physical: a 100px image drawn at 50mm is 0.5 mm/px, so a
+    2mm spacing must come out as 4px in the traced SVG."""
+    c = make_client(tmp_path)
+    d = c.post(
+        "/api/drawings",
+        files={"image": ("test.png", png_bytes(size=100), "image/png")},
+    ).json()
+    r = c.put(
+        f"/api/drawings/{d['id']}",
+        json={"threshold": 128, "size_mm": 50.0, "x": 0.0, "y": 0.0,
+              "rotation": 0.0, "infill": "hatch", "spacing": 2.0},
+    )
+    svg = r.json()["svg"]
+    ys = sorted({round(float(m), 3) for m in re.findall(r"M\s+[\d.]+\s+([\d.]+)", svg)})
+    diffs = [round(b - a, 3) for a, b in zip(ys, ys[1:]) if b - a > 0.5]
+    assert Counter(diffs).most_common(1)[0][0] == pytest.approx(4.0, abs=0.2)
 
 
 def test_machine_profile_roundtrip(tmp_path):

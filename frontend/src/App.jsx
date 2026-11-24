@@ -12,15 +12,34 @@ const EMPTY_SETTINGS = {
 
 export default function App() {
   const [drawing, setDrawing] = useState(null);
+  const [drawings, setDrawings] = useState([]);
   const [settings, setSettings] = useState(EMPTY_SETTINGS);
   const [profile, setProfile] = useState(null);
   const [job, setJob] = useState(null);
+  const [estimate, setEstimate] = useState(null);
   const [busy, setBusy] = useState(false);
   const wsRef = useRef(null);
+  const gcodeTimer = useRef(null);
 
   useEffect(() => {
     fetch("api/machine/profile").then((r) => r.json()).then(setProfile);
+    fetch("api/drawings").then((r) => r.json()).then(setDrawings);
   }, []);
+
+  async function openDrawing(id) {
+    const r = await fetch(`api/drawings/${id}`);
+    if (!r.ok) return;
+    const body = await r.json();
+    setDrawing(body);
+    setSettings({ ...EMPTY_SETTINGS, ...body.settings });
+    setEstimate(null);
+    generateGcode(body.id);
+  }
+
+  async function generateGcode(id) {
+    const r = await fetch(`api/drawings/${id}/gcode`, { method: "POST" });
+    if (r.ok) setEstimate((await r.json()).estimated_seconds);
+  }
 
   const watchJob = (jobId) => {
     if (wsRef.current) wsRef.current.close();
@@ -78,6 +97,9 @@ export default function App() {
     const body = await r.json();
     setDrawing(body);
     setSettings({ ...EMPTY_SETTINGS, ...body.settings });
+    setEstimate(null);
+    generateGcode(body.id);
+    setDrawings(await (await fetch("api/drawings")).json());
   }
 
   async function updateSettings(next) {
@@ -91,6 +113,9 @@ export default function App() {
     });
     const body = await r.json();
     setDrawing(body);
+    // regenerate G-code (debounced) so the time estimate stays current
+    clearTimeout(gcodeTimer.current);
+    gcodeTimer.current = setTimeout(() => generateGcode(drawing.id), 500);
   }
 
   // mm per image pixel for the current size_mm
@@ -108,7 +133,7 @@ export default function App() {
 
   async function plot() {
     setBusy(true);
-    await fetch(`api/drawings/${drawing.id}/gcode`, { method: "POST" });
+    await generateGcode(drawing.id);
     const r = await fetch("api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -142,6 +167,12 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(p),
     });
+  }
+
+  function formatTime(s) {
+    const m = Math.floor(s / 60);
+    const sec = Math.round(s % 60);
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
   }
 
   // drag on the preview moves the drawing on the bed
@@ -180,6 +211,18 @@ export default function App() {
         <section className="panel">
           <h2>1. Upload</h2>
           <input type="file" accept="image/*" onChange={upload} />
+          {drawings.length > 0 && (
+            <div style={{ marginTop: "1rem" }}>
+              <h3 style={{ margin: "0 0 0.25rem" }}>Saved drawings</h3>
+              <ul className="drawing-list">
+                {drawings.map((d) => (
+                  <li key={d.id}>
+                    <button onClick={() => openDrawing(d.id)}>{d.name}</button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {drawing && (
             <h2 style={{ marginTop: "1rem" }}>2. Configure</h2>
           )}
@@ -211,12 +254,15 @@ export default function App() {
               </label>
               {settings.infill !== "none" && (
                 <label>
-                  Spacing: {settings.spacing} px
+                  Spacing: {settings.spacing} mm
                   <input type="range" min="0.5" max="10" step="0.5" value={settings.spacing}
                     onChange={(e) => updateSettings({ spacing: +e.target.value })} />
                 </label>
               )}
               <button className="primary" disabled={busy} onClick={plot}>Plot</button>
+              {estimate != null && (
+                <p className="hint">Estimated plot time: {formatTime(estimate)}</p>
+              )}
               <button onClick={fitToBed} style={{ width: "100%", marginTop: "0.5rem" }}>Fit to bed</button>
             </>
           )}
@@ -225,6 +271,8 @@ export default function App() {
               <h2>3. Job</h2>
               <p>
                 {job.status} — {job.progress}%
+                {estimate != null && job.status === "running" &&
+                  ` — ≈ ${formatTime(estimate * (1 - job.progress / 100))} remaining`}
                 {busy && <button onClick={cancel}>Cancel</button>}
               </p>
               {job.error && <p className="error">{job.error}</p>}
@@ -239,8 +287,12 @@ export default function App() {
                 viewBox={`0 0 ${profile ? profile.bed_width : 300} ${profile ? profile.bed_height : 300}`}
                 style={{ background: "#fdf6e3", width: "100%", touchAction: "none" }}
               >
-                <g transform={`translate(${settings.x}, ${settings.y}) rotate(${settings.rotation}) scale(${mmPerPx})`}>
-                  <g transform={`scale(1, -1) translate(0, -${drawing.height_px})`} dangerouslySetInnerHTML={{ __html: drawing.svg }} />
+                {/* bed coords are y-up (front edge at the bottom of the screen),
+                    matching the printer's front-left origin */}
+                <g transform={`translate(0, ${profile ? profile.bed_height : 300}) scale(1, -1)`}>
+                  <g transform={`translate(${settings.x}, ${settings.y}) scale(${mmPerPx}) rotate(${-settings.rotation})`}>
+                    <g dangerouslySetInnerHTML={{ __html: drawing.svg }} />
+                  </g>
                 </g>
               </svg>
               {!drawing.svg.includes("<path") && (

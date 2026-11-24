@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import math
+import re
 
 from app.machine import MachineProfile
+
+_PARAM = re.compile(r"([A-Za-z])(-?\d*\.?\d+)")
 
 
 def order_paths(
@@ -90,3 +93,37 @@ def generate_gcode(
     lines.append(f"G0 Z{profile.pen_up_z:g}")
     lines.append("M84")
     return lines
+
+
+def estimate_seconds(lines: list[str], profile: MachineProfile) -> float:
+    """Constant-velocity estimate of job duration: each move's distance
+    divided by its feed rate, including Z and travel moves. No acceleration
+    model, so real jobs take longer. The start position is assumed to be
+    (0, 0, pen_down_z)."""
+    x, y, z = 0.0, 0.0, profile.pen_down_z
+    feed = profile.draw_feed
+    absolute = True
+    total = 0.0
+    for raw in lines:
+        parts = raw.strip().split()
+        if not parts:
+            continue
+        cmd = parts[0].upper()
+        params = {m.group(1).upper(): float(m.group(2))
+                  for m in _PARAM.finditer(" ".join(parts[1:]))}
+        if cmd in ("G0", "G1"):
+            if "F" in params:
+                feed = params["F"]
+            nx = params.get("X", x) if absolute else x + params.get("X", 0.0)
+            ny = params.get("Y", y) if absolute else y + params.get("Y", 0.0)
+            nz = params.get("Z", z) if absolute else z + params.get("Z", 0.0)
+            dist = math.dist((x, y, z), (nx, ny, nz))
+            if dist > 0 and feed > 0:
+                total += dist / feed * 60.0
+            x, y, z = nx, ny, nz
+        elif cmd == "G90":
+            absolute = True
+        elif cmd == "G91":
+            absolute = False
+        # G28 and other non-motion commands are ignored
+    return total
