@@ -10,7 +10,7 @@ from pydantic import BaseModel
 class MachineProfile(BaseModel):
     bed_width: float = 300.0
     bed_height: float = 300.0
-    pen_up_z: float = 5.0
+    pen_up_z: float = 1.5
     pen_down_z: float = 0.0
     travel_feed: float = 3000.0
     draw_feed: float = 1500.0
