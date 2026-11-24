@@ -1,7 +1,10 @@
 """Minimal Marlin sender: stream G-code lines, wait for ok."""
 from __future__ import annotations
 
+import logging
 import time
+
+log = logging.getLogger("crealipen.serial")
 
 
 class SenderError(RuntimeError):
@@ -39,6 +42,7 @@ class MarlinSender:
         self.port.close()
 
     def _write(self, line: str) -> None:
+        log.info(">> %s", line)
         self.port.write((line + "\n").encode())
 
     def _readline(self, timeout: float | None = None) -> str:
@@ -50,6 +54,7 @@ class MarlinSender:
                     line = line.decode("utf-8", errors="replace")
                 line = line.strip()
                 if line:
+                    log.info("<< %s", line)
                     return line
         raise SenderError("timeout waiting for printer response")
 
@@ -57,12 +62,15 @@ class MarlinSender:
         self._write(line)
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
-            response = self._readline()
+            response = self._readline(timeout=2.0)
             if response.startswith("ok"):
                 return
             if response.startswith("Error"):
                 raise SenderError(f"printer error on {line!r}: {response}")
-            # "echo:busy ..." and other chatter: keep waiting
+            # "echo:busy ..." and other chatter: keep waiting; each received
+            # line proves the printer is alive, so extend the deadline —
+            # long homing sequences emit busy lines for well over 30s
+            deadline = time.monotonic() + self.timeout
         raise SenderError(f"timeout waiting for ok on {line!r}")
 
     def run_gcode(self, lines: list[str], on_progress, stop, safe_z: float = 5.0) -> None:

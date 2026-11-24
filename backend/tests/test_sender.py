@@ -162,6 +162,15 @@ def test_stale_jobs_failed_on_startup():
     assert db.get_job(stuck)["status"] == "failed"
 
 
+def test_busy_chatter_extends_deadline():
+    """Long homing sequences emit 'echo:busy' for minutes; each received
+    line proves liveness and must extend the ok deadline."""
+    port = FakeSerial(responses={"G28": ["echo:busy: processing"] * 5 + ["ok"]}, delay=0.3)
+    port.open()
+    sender = MarlinSender(port, timeout=0.5)  # total ~1.8s, silence never > 0.5s
+    sender.send_line("G28")  # must not raise
+
+
 def test_error_mid_job_sends_m112_before_raising():
     """If a command fails mid-job (e.g. homing grinds forever and times
     out), the machine must be halted with M112 — motion must not run away."""
