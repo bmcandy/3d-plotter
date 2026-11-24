@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
 from app.db import Database
-from app.gcode import generate_gcode, transform_paths
+from app.gcode import estimate_seconds, generate_gcode, transform_paths
 from app.infill import PATTERNS, apply_infill
 from app.jobs import BusyError, JobRunner
 from app.machine import MachineProfile, ProfileStore
@@ -151,7 +151,8 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         )
         gcode = generate_gcode(all_paths, profiles.get())
         db.set_gcode(drawing_id, "\n".join(gcode))
-        return {"gcode": "\n".join(gcode), "lines": len(gcode)}
+        return {"gcode": "\n".join(gcode), "lines": len(gcode),
+                "estimated_seconds": estimate_seconds(gcode, profiles.get())}
 
     @app.post("/api/jobs")
     async def start_job(body: dict):

@@ -83,6 +83,16 @@ def test_generate_gcode_for_drawing(tmp_path):
     assert "G28" in r.json()["gcode"]
 
 
+def test_gcode_response_includes_estimate(tmp_path):
+    c = make_client(tmp_path)
+    d = c.post(
+        "/api/drawings",
+        files={"image": ("test.png", png_bytes(), "image/png")},
+    ).json()
+    r = c.post(f"/api/drawings/{d['id']}/gcode")
+    assert r.json()["estimated_seconds"] > 0
+
+
 def test_upload_auto_fits_drawing_to_bed(tmp_path):
     """A large image must land on the bed sized to 90% and centered,
     expressed as its max dimension in mm."""

@@ -16,8 +16,10 @@ export default function App() {
   const [settings, setSettings] = useState(EMPTY_SETTINGS);
   const [profile, setProfile] = useState(null);
   const [job, setJob] = useState(null);
+  const [estimate, setEstimate] = useState(null);
   const [busy, setBusy] = useState(false);
   const wsRef = useRef(null);
+  const gcodeTimer = useRef(null);
 
   useEffect(() => {
     fetch("api/machine/profile").then((r) => r.json()).then(setProfile);
@@ -30,6 +32,13 @@ export default function App() {
     const body = await r.json();
     setDrawing(body);
     setSettings({ ...EMPTY_SETTINGS, ...body.settings });
+    setEstimate(null);
+    generateGcode(body.id);
+  }
+
+  async function generateGcode(id) {
+    const r = await fetch(`api/drawings/${id}/gcode`, { method: "POST" });
+    if (r.ok) setEstimate((await r.json()).estimated_seconds);
   }
 
   const watchJob = (jobId) => {
@@ -88,6 +97,8 @@ export default function App() {
     const body = await r.json();
     setDrawing(body);
     setSettings({ ...EMPTY_SETTINGS, ...body.settings });
+    setEstimate(null);
+    generateGcode(body.id);
     setDrawings(await (await fetch("api/drawings")).json());
   }
 
@@ -102,6 +113,9 @@ export default function App() {
     });
     const body = await r.json();
     setDrawing(body);
+    // regenerate G-code (debounced) so the time estimate stays current
+    clearTimeout(gcodeTimer.current);
+    gcodeTimer.current = setTimeout(() => generateGcode(drawing.id), 500);
   }
 
   // mm per image pixel for the current size_mm
@@ -119,7 +133,7 @@ export default function App() {
 
   async function plot() {
     setBusy(true);
-    await fetch(`api/drawings/${drawing.id}/gcode`, { method: "POST" });
+    await generateGcode(drawing.id);
     const r = await fetch("api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -153,6 +167,12 @@ export default function App() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(p),
     });
+  }
+
+  function formatTime(s) {
+    const m = Math.floor(s / 60);
+    const sec = Math.round(s % 60);
+    return m > 0 ? `${m}m ${sec}s` : `${sec}s`;
   }
 
   // drag on the preview moves the drawing on the bed
@@ -240,6 +260,9 @@ export default function App() {
                 </label>
               )}
               <button className="primary" disabled={busy} onClick={plot}>Plot</button>
+              {estimate != null && (
+                <p className="hint">Estimated plot time: {formatTime(estimate)}</p>
+              )}
               <button onClick={fitToBed} style={{ width: "100%", marginTop: "0.5rem" }}>Fit to bed</button>
             </>
           )}
@@ -248,6 +271,8 @@ export default function App() {
               <h2>3. Job</h2>
               <p>
                 {job.status} — {job.progress}%
+                {estimate != null && job.status === "running" &&
+                  ` — ≈ ${formatTime(estimate * (1 - job.progress / 100))} remaining`}
                 {busy && <button onClick={cancel}>Cancel</button>}
               </p>
               {job.error && <p className="error">{job.error}</p>}

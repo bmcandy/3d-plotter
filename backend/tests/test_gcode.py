@@ -1,4 +1,6 @@
-from app.gcode import order_paths, generate_gcode
+import pytest
+
+from app.gcode import estimate_seconds, order_paths, generate_gcode
 from app.machine import MachineProfile
 
 PROFILE = MachineProfile(
@@ -69,6 +71,38 @@ def test_pen_down_before_draw_pen_up_for_travel():
             pen_down = False
         elif line.startswith("G1 X") and not pen_down:
             raise AssertionError(f"drawing move with pen up: {line}")
+
+
+def test_estimate_seconds_straight_lines():
+    lines = ["G90", "G0 X10 Y0 F3000", "G0 X20 Y0"]
+    # two 10mm travels at 3000 mm/min = 0.2s each
+    assert estimate_seconds(lines, PROFILE) == pytest.approx(0.4)
+
+
+def test_estimate_seconds_counts_z_moves_and_feed_rates():
+    lines = ["G90", "G0 Z5 F3000", "G1 Z0 F1500"]
+    # 5mm at 3000 mm/min = 0.1s, 5mm at 1500 mm/min = 0.2s
+    assert estimate_seconds(lines, PROFILE) == pytest.approx(0.3)
+
+
+def test_estimate_seconds_feed_is_modal():
+    lines = ["G90", "G1 X10 Y0 F600", "G1 X20 Y0"]
+    # the F600 on the first line applies to the second move too
+    assert estimate_seconds(lines, PROFILE) == pytest.approx(2.0)
+
+
+def test_estimate_seconds_handles_relative_mode():
+    lines = ["G91", "G1 X10 F600", "G1 X10"]
+    assert estimate_seconds(lines, PROFILE) == pytest.approx(2.0)
+
+
+def test_estimate_seconds_of_generated_gcode():
+    paths = [[(0, 0), (100, 0)], [(100, 100), (0, 100)]]
+    lines = generate_gcode(paths, PROFILE)
+    seconds = estimate_seconds(lines, PROFILE)
+    assert seconds > 0
+    # the two 100mm draw moves alone take 2 * 100/1500*60 = 8s
+    assert seconds > 8.0
 
 
 def test_coordinates_stay_within_bed():
