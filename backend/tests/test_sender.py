@@ -91,6 +91,34 @@ def test_failed_sender_factory_marks_job_failed_and_frees_machine():
     assert not runner.busy()  # machine must be usable again
 
 
+def test_missing_serial_device_gives_actionable_error(monkeypatch, tmp_path):
+    """A missing/empty serial port must produce an error that tells the
+    user what to do, not a bare 'could not open port'."""
+    import serial
+
+    from app.main import create_app
+
+    def boom(*args, **kwargs):
+        raise serial.SerialException("could not open port")
+
+    monkeypatch.setattr(serial, "Serial", boom)
+    app = create_app(data_dir=tmp_path, simulate=False)
+    db = app.state.db
+    drawing_id = db.create_drawing("x", "y", 1, 1, "<svg/>", {})
+    db.set_gcode(drawing_id, "G21")
+    job_id = app.state.job_runner.start(drawing_id, ["G21"])
+    import time
+
+    job = None
+    for _ in range(50):
+        job = db.get_job(job_id)
+        if job["status"] != "running":
+            break
+        time.sleep(0.02)
+    assert job["status"] == "failed"
+    assert "restart the app" in job["error"]
+
+
 def test_stale_jobs_failed_on_startup():
     """Jobs left pending/running by a restart are failed, per ADR 0002."""
     from app.db import Database

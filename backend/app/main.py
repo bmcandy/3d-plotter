@@ -55,9 +55,16 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
 
         import serial
 
-        port = os.environ.get("SERIAL_PORT", "/dev/creality")
-        port = serial.Serial(port, 115200, timeout=1)
-        return MarlinSender(port)
+        port = os.environ.get("SERIAL_PORT") or "/dev/creality"
+        try:
+            conn = serial.Serial(port, 115200, timeout=1)
+        except serial.SerialException as exc:
+            raise RuntimeError(
+                f"could not open serial port {port!r}: {exc}. "
+                "Connect the CR-10s and restart the app (serial devices are "
+                "detected at startup), or set serial_port in the app configuration."
+            ) from exc
+        return MarlinSender(conn)
 
     app.state.job_runner = JobRunner(db, sender_factory, safe_z=profiles.get().pen_up_z)
 

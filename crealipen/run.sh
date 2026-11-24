@@ -8,9 +8,10 @@ if [ -z "$SERIAL_PORT" ]; then
 fi
 if [ -n "$SERIAL_PORT" ]; then
     bashio::log.info "Using serial port: $SERIAL_PORT"
-    export SERIAL_PORT
 else
-    bashio::log.warning "No serial device found; plotting will fail until one is attached"
+    # must not remain exported empty: the app would try to open ''
+    unset SERIAL_PORT
+    bashio::log.warning "No serial device found; plotting will fail until one is attached and the app restarted"
 fi
 
 if bashio::config.true 'simulate'; then
