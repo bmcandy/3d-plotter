@@ -175,13 +175,15 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
 
     @app.post("/api/machine/estop")
     async def estop():
+        if app.state.job_runner.estop():
+            return {"ok": True, "job_halted": True}
         sender = sender_factory()
         try:
             sender.connect()
             sender.send_line(f"G0 Z{profiles.get().pen_up_z:g}")
         finally:
             sender.close()
-        return {"ok": True}
+        return {"ok": True, "job_halted": False}
 
     @app.websocket("/api/jobs/{job_id}/ws")
     async def job_progress(ws: WebSocket, job_id: int):

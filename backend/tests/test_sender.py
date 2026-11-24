@@ -36,7 +36,8 @@ def test_run_gcode_reports_progress_and_completes():
     lines = [f"G0 X{i}" for i in range(10)]
     sender.run_gcode(lines, on_progress=lambda i, n: progress.append((i, n)), stop=lambda: False)
     assert progress[-1] == (10, 10)
-    assert len(port.written) == 10
+    # the handshake's M105 plus the ten streamed lines
+    assert port.written[-10:] == [f"G0 X{i}" for i in range(10)]
 
 
 def test_failed_connect_marks_job_failed():
@@ -89,6 +90,27 @@ def test_failed_sender_factory_marks_job_failed_and_frees_machine():
     job = db.get_job(job_id)
     assert job["status"] == "failed"
     assert not runner.busy()  # machine must be usable again
+
+
+def test_connect_handshakes_through_boot_chatter():
+    """Opening the port resets Arduino boards; Marlin boots for a few
+    seconds and ignores early commands. connect() must poll until the
+    printer answers, tolerating boot chatter."""
+    port = FakeSerial(responses={"M105": ["start", "echo:Marlin init", "ok"]})
+    sender = MarlinSender(port)
+    sender.connect()  # must handshake through the chatter
+    sender.send_line("G28")  # and work normally afterwards
+    assert port.written[-1] == "G28"
+
+
+def test_connect_fails_cleanly_when_printer_silent():
+    class DeafPort(FakeSerial):
+        def readline(self):
+            return ""
+
+    sender = MarlinSender(DeafPort(), boot_wait=0.3)
+    with pytest.raises(SenderError, match="did not respond"):
+        sender.connect()
 
 
 def test_writes_are_newline_terminated_bytes():
@@ -157,8 +179,8 @@ def test_timeout_mid_job_sends_m112_before_raising():
             return ""  # never responds
 
     port = DeafPort()
+    port.open()
     sender = MarlinSender(port, timeout=0.2)
-    sender.connect()
     with pytest.raises(SenderError):
         sender.run_gcode(["G28 X Y"], on_progress=lambda i, n: None, stop=lambda: False)
     assert port.written[-1] == "M112"

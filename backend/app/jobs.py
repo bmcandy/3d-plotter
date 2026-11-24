@@ -13,6 +13,7 @@ class JobRunner:
         self.sender_factory = sender_factory  # () -> MarlinSender
         self.safe_z = safe_z  # pen-up Z, used for cancel/estop lifts
         self._active_job_id: int | None = None
+        self._sender: MarlinSender | None = None
         self._cancel = threading.Event()
         self._lock = threading.Lock()
         # ADR 0002: a Job never survives a restart; stale ones are failed
@@ -38,12 +39,25 @@ class JobRunner:
             return True
         return False
 
+    def estop(self) -> bool:
+        """Lift the pen immediately on the job's own sender (the serial port
+        is exclusively owned while a Job runs)."""
+        if self._sender is not None:
+            try:
+                self._sender.send_line(f"G0 Z{self.safe_z:g}")
+            except Exception:
+                pass  # best effort; the M112-on-failure path still applies
+            self._cancel.set()
+            return True
+        return False
+
     def _run(self, job_id: int, gcode: list[str]) -> None:
         self.db.update_job(job_id, status="running", progress=0)
         sender = None
         status, error = "done", None
         try:
             sender = self.sender_factory()
+            self._sender = sender
             sender.connect()
             sender.run_gcode(
                 gcode,
@@ -60,6 +74,7 @@ class JobRunner:
         finally:
             if sender is not None:
                 sender.close()
+            self._sender = None
             # release the machine before the terminal status is visible,
             # so a new Plot is never refused spuriously
             self._active_job_id = None
