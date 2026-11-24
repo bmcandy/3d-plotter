@@ -58,36 +58,38 @@ class MarlinSender:
                     return line
         raise SenderError("timeout waiting for printer response")
 
-    def send_line(self, line: str) -> None:
-        self._write(line)
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            response = self._readline(timeout=2.0)
-            if response.startswith("ok"):
-                return
-            if response.startswith("Error"):
-                raise SenderError(f"printer error on {line!r}: {response}")
-            # "echo:busy ..." and other chatter: keep waiting; each received
-            # line proves the printer is alive, so extend the deadline —
-            # long homing sequences emit busy lines for well over 30s
+    def send_line(self, line: str, retries: int = 2) -> None:
+        """Send a command and wait for ok. On a silent timeout the command
+        is resent: a lost ok (serial corruption) must not fail the job, and
+        move commands are idempotent for a pen plotter. The machine is
+        never halted by this sender — a silent printer just fails the job."""
+        for attempt in range(retries + 1):
+            self._write(line)
             deadline = time.monotonic() + self.timeout
-        raise SenderError(f"timeout waiting for ok on {line!r}")
+            while time.monotonic() < deadline:
+                try:
+                    response = self._readline(timeout=2.0)
+                except SenderError:
+                    continue  # silence; keep waiting until the deadline
+                if response.startswith("ok"):
+                    return
+                if response.startswith("Error"):
+                    raise SenderError(f"printer error on {line!r}: {response}")
+                # "echo:busy ..." and other chatter: keep waiting; each
+                # received line proves liveness, so extend the deadline —
+                # long homing sequences emit busy lines for well over 30s
+                deadline = time.monotonic() + self.timeout
+        raise SenderError(
+            f"printer stopped responding on {line!r} after {retries + 1} attempts"
+        )
 
     def run_gcode(self, lines: list[str], on_progress, stop, safe_z: float = 5.0) -> None:
         """Stream lines. `stop()` is polled between lines; when it returns
-        True the stream halts and the pen is lifted (safe Z). On any error
-        the machine is halted with M112 so motion can't run away."""
+        True the stream halts and the pen is lifted (safe Z)."""
         total = len(lines)
-        try:
-            for i, line in enumerate(lines):
-                if stop():
-                    self.send_line(f"G0 Z{safe_z:g}")  # lift pen
-                    return
-                self.send_line(line)
-                on_progress(i + 1, total)
-        except Exception:
-            try:
-                self._write("M112")  # emergency stop: kill all motion
-            except Exception:
-                pass  # port is dead too; nothing more we can do
-            raise
+        for i, line in enumerate(lines):
+            if stop():
+                self.send_line(f"G0 Z{safe_z:g}")  # lift pen
+                return
+            self.send_line(line)
+            on_progress(i + 1, total)
