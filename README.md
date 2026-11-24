@@ -25,8 +25,11 @@ The app runs against a `FakeSerial` simulator in dev; no hardware required.
 
 Work happens on feature branches: branch off `main`, open a pull request, and
 merge when CI passes. `main` is protected — direct pushes are not allowed, and
-CI must be green before merging. CI runs the backend test suite (Python 3.15)
-and builds the frontend on every PR and push to `main`.
+CI must be green before merging. CI runs the backend test suite (Python 3.15),
+builds the frontend, and requires a semantic version bump of the `version`
+field in `crealipen/config.yaml` on every PR (the Home Assistant Supervisor
+only offers an app update when that version changes) — see
+[AGENTS.md](./AGENTS.md).
 
 ## Deployment (Pi, Home Assistant OS)
 
