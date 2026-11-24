@@ -262,8 +262,12 @@ export default function App() {
                 viewBox={`0 0 ${profile ? profile.bed_width : 300} ${profile ? profile.bed_height : 300}`}
                 style={{ background: "#fdf6e3", width: "100%", touchAction: "none" }}
               >
-                <g transform={`translate(${settings.x}, ${settings.y}) rotate(${settings.rotation}) scale(${mmPerPx})`}>
-                  <g transform={`scale(1, -1) translate(0, -${drawing.height_px})`} dangerouslySetInnerHTML={{ __html: drawing.svg }} />
+                {/* bed coords are y-up (front edge at the bottom of the screen),
+                    matching the printer's front-left origin */}
+                <g transform={`translate(0, ${profile ? profile.bed_height : 300}) scale(1, -1)`}>
+                  <g transform={`translate(${settings.x}, ${settings.y}) scale(${mmPerPx}) rotate(${-settings.rotation})`}>
+                    <g dangerouslySetInnerHTML={{ __html: drawing.svg }} />
+                  </g>
                 </g>
               </svg>
               {!drawing.svg.includes("<path") && (
