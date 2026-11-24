@@ -172,3 +172,47 @@ def test_second_job_refused_while_machine_busy(tmp_path):
         assert r.status_code == 409
     finally:
         runner._active_job_id = None
+
+
+def noisy_blob_bytes(size=400, seed=7):
+    """A disc with a jittered boundary: tracing it yields many short
+    segments, the situation simplification is meant to fix."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:size, 0:size]
+    r = np.sqrt((xx - size / 2) ** 2 + (yy - size / 2) ** 2)
+    jitter = rng.uniform(-3, 3, size=(size, size))
+    px = np.where(r + jitter < size / 4, 0, 255).astype(np.uint8)
+    buf = io.BytesIO()
+    Image.fromarray(px).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_upload_defaults_detail_mm(tmp_path):
+    c = make_client(tmp_path)
+    d = c.post(
+        "/api/drawings",
+        files={"image": ("test.png", png_bytes(), "image/png")},
+    ).json()
+    assert d["settings"]["detail_mm"] == 0.5
+
+
+def test_detail_mm_simplifies_preview_and_gcode_together(tmp_path):
+    """The preview must render exactly what will be plotted: the same
+    simplification applies to the SVG and the G-code."""
+    c = make_client(tmp_path)
+    d = c.post(
+        "/api/drawings",
+        files={"image": ("blob.png", noisy_blob_bytes(), "image/png")},
+    ).json()
+    fine = dict(d["settings"], detail_mm=0.2)
+    coarse = dict(d["settings"], detail_mm=5.0)
+
+    r_fine = c.put(f"/api/drawings/{d['id']}", json=fine).json()
+    r_coarse = c.put(f"/api/drawings/{d['id']}", json=coarse).json()
+    assert r_coarse["svg"].count("L ") < r_fine["svg"].count("L ")
+
+    g_fine = c.post(f"/api/drawings/{d['id']}/gcode").json()  # coarse stored
+    g_coarse = g_fine
+    c.put(f"/api/drawings/{d['id']}", json=fine)
+    g_fine = c.post(f"/api/drawings/{d['id']}/gcode").json()
+    assert g_coarse["lines"] < g_fine["lines"]

@@ -6,6 +6,8 @@ bed coordinates.
 """
 from __future__ import annotations
 
+import math
+
 import cv2
 import numpy as np
 from PIL import Image
@@ -43,6 +45,46 @@ def trace_image(img: Image.Image, threshold: int, min_area: float = 25.0) -> lis
             pts.append(pts[0])  # close the ring for polygonize/G-code
         paths.append(pts)
     return paths
+
+
+def _simplify(path: list[tuple[float, float]], tolerance: float) -> list[tuple[float, float]]:
+    if len(path) <= 2:
+        return path
+    keep = [False] * len(path)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(path) - 1)]
+    while stack:
+        a, b = stack.pop()
+        if b <= a + 1:
+            continue
+        ax, ay = path[a]
+        dx, dy = path[b][0] - ax, path[b][1] - ay
+        seg2 = dx * dx + dy * dy
+        best_d, best_i = -1.0, -1
+        for i in range(a + 1, b):
+            px, py = path[i]
+            if seg2 == 0.0:
+                d = math.hypot(px - ax, py - ay)
+            else:
+                t = min(1.0, max(0.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
+                d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+            if d > best_d:
+                best_d, best_i = d, i
+        if best_d > tolerance:
+            keep[best_i] = True
+            stack.append((a, best_i))
+            stack.append((best_i, b))
+    return [pt for pt, k in zip(path, keep) if k]
+
+
+def simplify_paths(
+    paths: list[list[tuple[float, float]]], tolerance: float
+) -> list[list[tuple[float, float]]]:
+    """Douglas-Peucker simplification; tolerance is in the paths' own units.
+    Collapses micro-segments so plots are not dominated by per-move overhead."""
+    if tolerance <= 0:
+        return paths
+    return [_simplify(path, tolerance) for path in paths]
 
 
 def contours_to_svg(paths: list[list[tuple[float, float]]], width: float, height: float) -> str:

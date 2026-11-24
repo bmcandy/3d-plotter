@@ -19,7 +19,7 @@ from app.jobs import BusyError, JobRunner
 from app.machine import MachineProfile, ProfileStore
 from app.sender import MarlinSender
 from app.simulator import FakeSerial
-from app.tracing import contours_to_svg, trace_image
+from app.tracing import contours_to_svg, simplify_paths, trace_image
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
@@ -38,11 +38,26 @@ class StripIngressPath:
         await self.app(scope, receive, send)
 
 
+def _mm_per_px(settings: dict, img: Image.Image) -> float:
+    return float(settings.get("size_mm", 300.0)) / max(img.width, img.height)
+
+
 def _spacing_px(settings: dict, img: Image.Image) -> float:
     """Infill spacing is specified in mm; convert to image pixels using the
     drawing's current mm-per-pixel so physical spacing is exact."""
-    mm_per_px = float(settings.get("size_mm", 300.0)) / max(img.width, img.height)
-    return float(settings.get("spacing", 2.0)) / mm_per_px
+    return float(settings.get("spacing", 2.0)) / _mm_per_px(settings, img)
+
+
+def _plot_paths(settings: dict, img: Image.Image) -> list[list[tuple[float, float]]]:
+    """Traced and infilled paths, simplified by the detail tolerance (mm).
+    Both the preview SVG and the G-code are built from these, so the
+    preview renders exactly what will be plotted."""
+    paths = trace_image(img, threshold=int(settings.get("threshold", 128)))
+    outlines, infill = apply_infill(paths, settings.get("infill", "none"),
+                                    _spacing_px(settings, img))
+    tolerance_px = float(settings.get("detail_mm", 0.5)) / _mm_per_px(settings, img)
+    return simplify_paths(outlines + [list(line.coords) for line in infill],
+                          tolerance_px)
 
 
 def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastAPI:
@@ -98,7 +113,8 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         settings = {"threshold": threshold, "size_mm": round(max_dim * fit, 1),
                     "x": round((profile.bed_width - img.width * fit) / 2, 2),
                     "y": round((profile.bed_height - img.height * fit) / 2, 2),
-                    "rotation": 0.0, "infill": "none", "spacing": 2.0}
+                    "rotation": 0.0, "infill": "none", "spacing": 2.0,
+                    "detail_mm": 0.5}
         drawing_id = db.create_drawing(
             name=image.filename or "drawing", image_path=str(image_path),
             width_px=img.width, height_px=img.height, svg=svg, settings=settings,
@@ -123,10 +139,7 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         if drawing is None:
             raise HTTPException(404, "drawing not found")
         img = Image.open(drawing["image_path"])
-        paths = trace_image(img, threshold=int(settings.get("threshold", 128)))
-        outlines, infill = apply_infill(paths, settings.get("infill", "none"),
-                                        _spacing_px(settings, img))
-        svg = contours_to_svg(outlines + [list(line.coords) for line in infill],
+        svg = contours_to_svg(_plot_paths(settings, img),
                               width=img.width, height=img.height)
         db.update_drawing(drawing_id, svg=svg, settings=settings)
         return {"id": drawing_id, "svg": svg, "settings": settings,
@@ -139,11 +152,8 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
             raise HTTPException(404, "drawing not found")
         settings = drawing["settings"]
         img = Image.open(drawing["image_path"])
-        paths = trace_image(img, threshold=int(settings.get("threshold", 128)))
-        outlines, infill = apply_infill(paths, settings.get("infill", "none"),
-                                        _spacing_px(settings, img))
         all_paths = transform_paths(
-            outlines + [list(line.coords) for line in infill],
+            _plot_paths(settings, img),
             scale=float(settings.get("size_mm", 300.0)) / max(img.width, img.height),
             x=float(settings.get("x", 0.0)),
             y=float(settings.get("y", 0.0)),

@@ -8,6 +8,7 @@ const EMPTY_SETTINGS = {
   rotation: 0,
   infill: "none",
   spacing: 2.0,
+  detail_mm: 0.5,
 };
 
 export default function App() {
@@ -242,6 +243,11 @@ export default function App() {
                 Rotation: {settings.rotation}°
                 <input type="range" min="0" max="360" value={settings.rotation}
                   onChange={(e) => updateSettings({ rotation: +e.target.value })} />
+              </label>
+              <label>
+                Detail tolerance: {settings.detail_mm} mm
+                <input type="range" min="0.2" max="5" step="0.1" value={settings.detail_mm}
+                  onChange={(e) => updateSettings({ detail_mm: +e.target.value })} />
               </label>
               <label>
                 Infill:
