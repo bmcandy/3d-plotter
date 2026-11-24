@@ -91,6 +91,15 @@ def test_failed_sender_factory_marks_job_failed_and_frees_machine():
     assert not runner.busy()  # machine must be usable again
 
 
+def test_writes_are_newline_terminated_bytes():
+    """pyserial requires bytes; Marlin requires newline-terminated commands."""
+    port = FakeSerial()
+    sender = MarlinSender(port)
+    sender.connect()
+    sender.send_line("G28")
+    assert port.raw_written[-1] == b"G28\n"
+
+
 def test_missing_serial_device_gives_actionable_error(monkeypatch, tmp_path):
     """A missing/empty serial port must produce an error that tells the
     user what to do, not a bare 'could not open port'."""

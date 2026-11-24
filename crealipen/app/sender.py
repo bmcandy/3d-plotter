@@ -20,16 +20,21 @@ class MarlinSender:
     def close(self) -> None:
         self.port.close()
 
+    def _write(self, line: str) -> None:
+        self.port.write((line + "\n").encode())
+
     def _readline(self) -> str:
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             line = self.port.readline()
             if line:
-                return line
+                if isinstance(line, bytes):
+                    line = line.decode("utf-8", errors="replace")
+                return line.strip()
         raise SenderError("timeout waiting for printer response")
 
     def send_line(self, line: str) -> None:
-        self.port.write(line)
+        self._write(line)
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             response = self._readline()
@@ -54,7 +59,7 @@ class MarlinSender:
                 on_progress(i + 1, total)
         except Exception:
             try:
-                self.port.write("M112")  # emergency stop: kill all motion
+                self._write("M112")  # emergency stop: kill all motion
             except Exception:
                 pass  # port is dead too; nothing more we can do
             raise

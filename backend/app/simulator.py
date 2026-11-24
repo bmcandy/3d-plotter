@@ -13,6 +13,7 @@ class FakeSerial:
         self.responses = responses or {}
         self.delay = delay
         self.written: list[str] = []
+        self.raw_written: list[bytes] = []
         self._pending: list[str] = []
         self._open = False
 
@@ -26,9 +27,13 @@ class FakeSerial:
     def close(self) -> None:
         self._open = False
 
-    def write(self, line: str) -> None:
+    def write(self, data: bytes | str) -> None:
         if not self._open:
             raise IOError("port not open")
+        if isinstance(data, bytes):
+            self.raw_written.append(data)
+            data = data.decode("utf-8")
+        line = data.strip()
         self.written.append(line)
         response = self.responses.get(line, "ok")
         if isinstance(response, str):
