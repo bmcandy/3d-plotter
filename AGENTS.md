@@ -15,14 +15,14 @@ must therefore bump that version, following semantic versioning:
 Bump the version in the same PR as the change it ships. CI fails any PR or
 push to `main` where the version did not increase.
 
-## Deployment copy (crealipen/)
+## Shipping to Home Assistant
 
-The HA Supervisor builds the app image with `crealipen/` as its build
-context, so that directory holds a committed deployment copy: the compiled
-frontend (`crealipen/static/`) and a copy of the backend (`crealipen/app/`).
-After changing `backend/app` or `frontend/src`, run `scripts/sync-app.sh`
-and commit the result — a stale copy ships old code to Home Assistant even
-with a version bump. CI fails any PR where `crealipen/` is out of sync.
+The app image is built by CI (`publish.yml`) on every merge to `main` and
+published to GHCR, tagged with the `version` from `crealipen/config.yaml`;
+the Supervisor pulls `ghcr.io/bmcandy/3d-plotter/crealipen-{arch}` at that
+tag (see [ADR 0005](./docs/adr/0005-prebuilt-ghcr-images.md)). Shipping a
+change therefore means bumping the version in the same PR as the change —
+there is no committed build output to sync.
 
 ## Workflow
 
