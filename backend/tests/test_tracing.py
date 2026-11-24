@@ -1,7 +1,7 @@
 import numpy as np
 from PIL import Image
 
-from app.tracing import trace_image, contours_to_svg
+from app.tracing import trace_image, contours_to_svg, simplify_paths
 
 
 def black_square_image(size=100, lo=20, hi=80):
@@ -56,3 +56,31 @@ def test_contours_to_svg_contains_path_and_viewbox():
     assert svg.startswith("<svg")
     assert 'viewBox="0 0 100 100"' in svg
     assert "<path" in svg
+
+
+def test_simplify_collapses_collinear_points():
+    path = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]
+    assert simplify_paths([path], tolerance=0.1) == [[(0.0, 0.0), (3.0, 0.0)]]
+
+
+def test_simplify_preserves_corners():
+    path = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]
+    assert simplify_paths([path], tolerance=0.1) == [path]
+
+
+def test_simplify_tolerance_drops_small_deviation_keeps_large():
+    path = [(0.0, 0.0), (1.0, 0.3), (2.0, 0.0)]
+    assert simplify_paths([path], tolerance=0.5) == [[(0.0, 0.0), (2.0, 0.0)]]
+    assert simplify_paths([path], tolerance=0.2) == [path]
+
+
+def test_simplify_keeps_closed_rings_closed():
+    path = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]
+    out = simplify_paths([path], tolerance=0.1)[0]
+    assert out[0] == out[-1]
+    assert len(out) < len(path)
+
+
+def test_simplify_leaves_tiny_paths_alone():
+    path = [(0.0, 0.0), (1.0, 1.0)]
+    assert simplify_paths([path], tolerance=0.5) == [path]

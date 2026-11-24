@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 
 log = logging.getLogger("crealipen.serial")
 
@@ -12,10 +13,14 @@ class SenderError(RuntimeError):
 
 
 class MarlinSender:
-    def __init__(self, port, timeout: float = 30.0, boot_wait: float = 30.0):
+    def __init__(self, port, timeout: float = 30.0, boot_wait: float = 30.0,
+                 window: int = 4):
         self.port = port
         self.timeout = timeout
         self.boot_wait = boot_wait
+        # lines allowed in flight before an ok must be consumed; Marlin's RX
+        # buffer is small, so stay well inside it
+        self.window = window
 
     def connect(self) -> None:
         if not self.port.is_open:
@@ -59,12 +64,42 @@ class MarlinSender:
         raise SenderError("timeout waiting for printer response")
 
     def send_line(self, line: str, retries: int = 2) -> None:
-        """Send a command and wait for ok. On a silent timeout the command
-        is resent: a lost ok (serial corruption) must not fail the job, and
-        move commands are idempotent for a pen plotter. The machine is
+        """Send one command and wait for its ok (no pipelining)."""
+        self._write(line)
+        self._await_ok(line, retries)
+
+    def run_gcode(self, lines: list[str], on_progress, stop, safe_z: float = 5.0) -> None:
+        """Stream lines with a window of in-flight commands so dense plots
+        are not latency-bound by one-ok-per-line round trips. `stop()` is
+        polled between lines; when it returns True the stream stops feeding
+        new lines, drains the in-flight ones, and lifts the pen (safe Z)."""
+        total = len(lines)
+        sent, finished = 0, 0
+        inflight: deque[str] = deque()
+        halted = False
+        while finished < total or (halted and inflight):
+            if not halted and stop():
+                halted = True
+            while not halted and len(inflight) < self.window and sent < total:
+                self._write(lines[sent])
+                inflight.append(lines[sent])
+                sent += 1
+            if halted and not inflight:
+                self.send_line(f"G0 Z{safe_z:g}")  # lift pen
+                return
+            self._await_ok(inflight[0])
+            inflight.popleft()
+            finished += 1
+            on_progress(finished, total)
+
+    def _await_ok(self, line: str, retries: int = 2) -> None:
+        """Wait for the ok of one in-flight line. On a silent timeout the
+        line is resent: a lost ok (serial corruption) must not fail the job,
+        and move commands are idempotent for a pen plotter. The machine is
         never halted by this sender — a silent printer just fails the job."""
         for attempt in range(retries + 1):
-            self._write(line)
+            if attempt:
+                self._write(line)
             deadline = time.monotonic() + self.timeout
             while time.monotonic() < deadline:
                 try:
@@ -82,14 +117,3 @@ class MarlinSender:
         raise SenderError(
             f"printer stopped responding on {line!r} after {retries + 1} attempts"
         )
-
-    def run_gcode(self, lines: list[str], on_progress, stop, safe_z: float = 5.0) -> None:
-        """Stream lines. `stop()` is polled between lines; when it returns
-        True the stream halts and the pen is lifted (safe Z)."""
-        total = len(lines)
-        for i, line in enumerate(lines):
-            if stop():
-                self.send_line(f"G0 Z{safe_z:g}")  # lift pen
-                return
-            self.send_line(line)
-            on_progress(i + 1, total)

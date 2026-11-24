@@ -275,3 +275,92 @@ def test_cancel_lifts_pen_to_safe_z():
     )
     assert port.written[-1] == "G0 Z7.5"
     assert len(port.written) < 100
+
+
+class RecordingPort(FakeSerial):
+    """Records the write/read interleaving so pipelining is observable."""
+
+    def __init__(self):
+        super().__init__()
+        self.events: list[tuple[str, str]] = []
+
+    def write(self, data):
+        super().write(data)
+        self.events.append(("write", data.decode().strip()))
+
+    def readline(self):
+        line = super().readline()
+        self.events.append(("read", line))
+        return line
+
+
+def test_run_gcode_pipelines_lines_within_window():
+    """Several lines must be in flight before the first ok is consumed —
+    send-one-wait-for-one makes dense plots latency-bound."""
+    port = RecordingPort()
+    sender = MarlinSender(port)
+    sender.connect()
+    port.events.clear()
+    sender.run_gcode(
+        [f"G0 X{i}" for i in range(10)],
+        on_progress=lambda i, n: None,
+        stop=lambda: False,
+    )
+    kinds = [kind for kind, _ in port.events]
+    assert kinds[:4] == ["write"] * 4
+
+
+def test_pipelined_error_fails_the_job():
+    port = FakeSerial(responses={"G0 X1": "Error:boom"})
+    sender = MarlinSender(port)
+    sender.connect()
+    with pytest.raises(SenderError):
+        sender.run_gcode(
+            ["G0 X0", "G0 X1", "G0 X2"],
+            on_progress=lambda i, n: None,
+            stop=lambda: False,
+        )
+
+
+class SwallowOkPort(FakeSerial):
+    """Swallows the ok of one line's writes, simulating lost oks."""
+
+    def __init__(self, silent: str, times: int = 1):
+        super().__init__()
+        self.silent = silent
+        self.times = times
+        self.swallowed = 0
+
+    def write(self, data):
+        super().write(data)
+        if self.written[-1] == self.silent and self.swallowed < self.times:
+            self.swallowed += 1
+            if self._pending and self._pending[-1] == "ok":
+                self._pending.pop()
+
+
+def test_pipelined_resends_oldest_on_silence():
+    """A lost ok mid-stream surfaces as silence once the buffered oks are
+    consumed; the oldest unfinished line is resent (idempotent for moves)."""
+    port = SwallowOkPort("G0 X2", times=1)
+    sender = MarlinSender(port, timeout=0.3)
+    sender.connect()
+    sender.run_gcode(
+        ["G0 X0", "G0 X1", "G0 X2"],
+        on_progress=lambda i, n: None,
+        stop=lambda: False,
+    )
+    assert port.written.count("G0 X2") == 2
+
+
+def test_pipelined_resend_exhaustion_fails():
+    port = SwallowOkPort("G0 X2", times=99)
+    sender = MarlinSender(port, timeout=0.3)
+    sender.connect()
+    with pytest.raises(SenderError):
+        sender.run_gcode(
+            ["G0 X0", "G0 X1", "G0 X2"],
+            on_progress=lambda i, n: None,
+            stop=lambda: False,
+        )
+    assert "M112" not in port.written
