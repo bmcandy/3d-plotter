@@ -39,6 +39,9 @@ class StripIngressPath:
 
 
 def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastAPI:
+    import logging
+
+    logging.basicConfig(level=logging.INFO)  # serial exchange goes to stdout/app logs
     data_dir = Path(data_dir)
     app = FastAPI(title="Crealipen")
     app.add_middleware(StripIngressPath)
