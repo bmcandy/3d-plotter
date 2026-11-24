@@ -8,7 +8,7 @@ from app.sender import MarlinSender
 
 
 class JobRunner:
-    def __init__(self, db: Database, sender_factory, safe_z: float = 5.0):
+    def __init__(self, db: Database, sender_factory, safe_z: float = 1.5):
         self.db = db
         self.sender_factory = sender_factory  # () -> MarlinSender
         self.safe_z = safe_z  # pen-up Z, used for cancel/estop lifts

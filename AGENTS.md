@@ -15,6 +15,15 @@ must therefore bump that version, following semantic versioning:
 Bump the version in the same PR as the change it ships. CI fails any PR or
 push to `main` where the version did not increase.
 
+## Deployment copy (crealipen/)
+
+The HA Supervisor builds the app image with `crealipen/` as its build
+context, so that directory holds a committed deployment copy: the compiled
+frontend (`crealipen/static/`) and a copy of the backend (`crealipen/app/`).
+After changing `backend/app` or `frontend/src`, run `scripts/sync-app.sh`
+and commit the result — a stale copy ships old code to Home Assistant even
+with a version bump. CI fails any PR where `crealipen/` is out of sync.
+
 ## Workflow
 
 Feature branches off `main`, pull requests, green CI before merge — see

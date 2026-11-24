@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
 from app.db import Database
-from app.gcode import generate_gcode, transform_paths
+from app.gcode import estimate_seconds, generate_gcode, transform_paths
 from app.infill import PATTERNS, apply_infill
 from app.jobs import BusyError, JobRunner
 from app.machine import MachineProfile, ProfileStore
@@ -36,6 +36,13 @@ class StripIngressPath:
             parts = scope["path"].split("/", 3)
             scope["path"] = "/" + parts[3] if len(parts) > 3 else "/"
         await self.app(scope, receive, send)
+
+
+def _spacing_px(settings: dict, img: Image.Image) -> float:
+    """Infill spacing is specified in mm; convert to image pixels using the
+    drawing's current mm-per-pixel so physical spacing is exact."""
+    mm_per_px = float(settings.get("size_mm", 300.0)) / max(img.width, img.height)
+    return float(settings.get("spacing", 2.0)) / mm_per_px
 
 
 def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastAPI:
@@ -99,6 +106,10 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         return {"id": drawing_id, "svg": svg, "settings": settings,
                 "width_px": img.width, "height_px": img.height}
 
+    @app.get("/api/drawings")
+    async def list_drawings():
+        return db.list_drawings()
+
     @app.get("/api/drawings/{drawing_id}")
     async def get_drawing(drawing_id: int):
         drawing = db.get_drawing(drawing_id)
@@ -114,7 +125,7 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         img = Image.open(drawing["image_path"])
         paths = trace_image(img, threshold=int(settings.get("threshold", 128)))
         outlines, infill = apply_infill(paths, settings.get("infill", "none"),
-                                        float(settings.get("spacing", 2.0)))
+                                        _spacing_px(settings, img))
         svg = contours_to_svg(outlines + [list(line.coords) for line in infill],
                               width=img.width, height=img.height)
         db.update_drawing(drawing_id, svg=svg, settings=settings)
@@ -130,7 +141,7 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         img = Image.open(drawing["image_path"])
         paths = trace_image(img, threshold=int(settings.get("threshold", 128)))
         outlines, infill = apply_infill(paths, settings.get("infill", "none"),
-                                        float(settings.get("spacing", 2.0)))
+                                        _spacing_px(settings, img))
         all_paths = transform_paths(
             outlines + [list(line.coords) for line in infill],
             scale=float(settings.get("size_mm", 300.0)) / max(img.width, img.height),
@@ -140,7 +151,8 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         )
         gcode = generate_gcode(all_paths, profiles.get())
         db.set_gcode(drawing_id, "\n".join(gcode))
-        return {"gcode": "\n".join(gcode), "lines": len(gcode)}
+        return {"gcode": "\n".join(gcode), "lines": len(gcode),
+                "estimated_seconds": estimate_seconds(gcode, profiles.get())}
 
     @app.post("/api/jobs")
     async def start_job(body: dict):

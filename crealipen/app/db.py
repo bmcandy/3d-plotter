@@ -53,6 +53,13 @@ class Database:
             self._conn.commit()
             return cur.lastrowid
 
+    def list_drawings(self) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, name, width_px, height_px, settings FROM drawings ORDER BY id"
+            ).fetchall()
+            return [dict(row) | {"settings": json.loads(row["settings"])} for row in rows]
+
     def get_drawing(self, drawing_id: int) -> dict | None:
         with self._lock:
             row = self._conn.execute("SELECT * FROM drawings WHERE id = ?", (drawing_id,)).fetchone()
