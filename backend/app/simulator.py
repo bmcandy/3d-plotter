@@ -10,9 +10,9 @@ class FakeSerial:
     """Implements the serial-port surface MarlinSender needs, emulating
     Marlin's line protocol: `N<n> <cmd>*<checksum>` wrappers are validated
     (a bad checksum yields a `Resend:` request and the command does not
-    run), and a line Marlin cannot parse is echoed as an unknown command
-    and skipped. `responses` keys on the bare command (wrapper stripped),
-    as does `written`; `raw_written` keeps the bytes on the wire.
+    run); unnumbered lines are accepted as-is. `responses` keys on the
+    bare command (wrapper stripped), as does `written`; `raw_written`
+    keeps the bytes on the wire.
 
     `responses` maps a bare command to either a response string or a list
     of response strings (consumed in order); default is "ok".
@@ -52,10 +52,6 @@ class FakeSerial:
                 self._pending.append(f"Resend:{m.group(1)}")
                 return
             line = m.group(2)
-        else:
-            self._pending.append(f'echo:Unknown command: "{line}"')
-            self._pending.append("ok")
-            return
         self.written.append(line)
         response = self.responses.get(line, "ok")
         if isinstance(response, str):
