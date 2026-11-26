@@ -7,23 +7,36 @@ _NUMBERED = re.compile(r"^N(\d+) (.*)\*([0-9]+)$")
 
 
 class FakeSerial:
-    """Implements the serial-port surface MarlinSender needs, emulating
-    Marlin's line protocol: `N<n> <cmd>*<checksum>` wrappers are validated
-    (a bad checksum yields a `Resend:` request and the command does not
-    run); unnumbered lines are accepted as-is. `responses` keys on the
-    bare command (wrapper stripped), as does `written`; `raw_written`
-    keeps the bytes on the wire.
+    """Emulates Marlin's serial receiver faithfully enough that sender
+    desync fails in CI instead of on the printer (#26):
 
-    `responses` maps a bare command to either a response string or a list
-    of response strings (consumed in order); default is "ok".
+    - numbered lines `N<n> <cmd>*<checksum>` must arrive in order
+      (`n == last + 1`) with a valid checksum; anything else is not
+      executed and yields Marlin's error trio: the `Error:` line, a
+      `Resend: <last+1>` request, and `ok`;
+    - `M110 N<n>` sets the expected line number;
+    - unnumbered lines are accepted without moving the count;
+    - `boot_drops` simulates the DTR-reset boot window: the first that
+      many writes are silently discarded, as on a real board.
+
+    `responses` maps a bare command (wrapper stripped) to a response
+    string or a list consumed in order; default is "ok". A list is served
+    on the command's first execution only — later executions get the
+    default — so a one-off glitch (a refused command that succeeds on
+    retry) can be modeled. `written` records executed commands;
+    `raw_written` keeps the bytes on the wire.
     """
 
-    def __init__(self, responses: dict[str, str | list[str]] | None = None, delay: float = 0.0):
+    def __init__(self, responses: dict[str, str | list[str]] | None = None,
+                 delay: float = 0.0, boot_drops: int = 0):
         self.responses = responses or {}
         self.delay = delay
+        self.boot_drops = boot_drops
+        self.last_line = 0
         self.written: list[str] = []
         self.raw_written: list[bytes] = []
         self._pending: list[str] = []
+        self._served_lists: set[str] = set()
         self._open = False
 
     @property
@@ -36,6 +49,13 @@ class FakeSerial:
     def close(self) -> None:
         self._open = False
 
+    def _reject(self, error: str) -> None:
+        self._pending.extend([
+            error,
+            f"Resend: {self.last_line + 1}",
+            "ok",
+        ])
+
     def write(self, data: bytes | str) -> None:
         if not self._open:
             raise IOError("port not open")
@@ -43,17 +63,37 @@ class FakeSerial:
             self.raw_written.append(data)
             data = data.decode("utf-8")
         line = data.strip()
+        if self.boot_drops > 0:
+            self.boot_drops -= 1  # dropped during the reset boot window
+            return
         m = _NUMBERED.match(line)
         if m:
+            n, cmd, cs = int(m.group(1)), m.group(2), m.group(3)
             expected = 0
             for ch in line[:line.index("*")]:
                 expected ^= ord(ch)
-            if str(expected) != m.group(3):
-                self._pending.append(f"Resend:{m.group(1)}")
+            if str(expected) != cs:
+                self._reject(f"Error:checksum mismatch, Last Line: {self.last_line}")
                 return
-            line = m.group(2)
+            if n != self.last_line + 1:
+                self._reject(
+                    "Error:Line Number is not Last Line Number+1,"
+                    f" Last Line: {self.last_line}"
+                )
+                return
+            self.last_line = n
+            line = cmd
+        elif line.startswith("M110"):
+            m110 = re.search(r"N(\d+)", line)
+            if m110:
+                self.last_line = int(m110.group(1))
         self.written.append(line)
         response = self.responses.get(line, "ok")
+        if isinstance(response, list):
+            if line in self._served_lists:
+                response = "ok"
+            else:
+                self._served_lists.add(line)
         if isinstance(response, str):
             self._pending.append(response)
         else:
