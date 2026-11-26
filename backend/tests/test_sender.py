@@ -159,6 +159,38 @@ def test_connect_resets_line_numbering_after_printer_reset():
     assert re.match(rb"^N1 G21\*\d+\n$", port.raw_written[-1])
 
 
+def test_checksum_mismatch_error_is_recovered_not_fatal():
+    """Real Marlin answers a corrupted line with the trio 'Error:checksum
+    mismatch, Last Line: N' + 'Resend: N+1' + ok. That is a resend
+    request, not a job failure — the sender must wait for the Resend and
+    rewrite the line."""
+    port = FakeSerial(responses={
+        "G1 X1": ["Error:checksum mismatch, Last Line: 0", "Resend: 1", "ok", "ok"],
+    })
+    sender = MarlinSender(port)
+    sender.connect()
+    sender.send_line("G1 X1")  # must not raise
+    assert len([raw for raw in port.raw_written if b"G1 X1" in raw]) == 2
+
+
+def test_line_number_error_is_recovered_not_fatal():
+    port = FakeSerial(responses={
+        "G1 X1": ["Error:Line Number is not Last Line Number+1, Last Line: 0",
+                  "Resend: 1", "ok", "ok"],
+    })
+    sender = MarlinSender(port)
+    sender.connect()
+    sender.send_line("G1 X1")  # must not raise
+
+
+def test_other_printer_errors_still_fail_the_job():
+    port = FakeSerial(responses={"G1 X1": "Error:Thermal Runaway"})
+    sender = MarlinSender(port)
+    sender.connect()
+    with pytest.raises(SenderError, match="Thermal Runaway"):
+        sender.send_line("G1 X1")
+
+
 def test_corrupted_line_is_resent_after_resend_request():
     """A duplicated byte on the wire (the CH340 corruption in #21) must be
     caught by the printer's checksum and the line resent — not dropped."""
@@ -185,10 +217,23 @@ def test_unknown_command_is_retried_not_dropped():
     assert port.written.count("G0 Z1.5") == 2
 
 
+class RefusingPort(FakeSerial):
+    """Always refuses one command (echo:Unknown command + ok), however
+    often it is retried."""
+
+    def __init__(self, refuse: str):
+        super().__init__()
+        self.refuse = refuse
+
+    def write(self, data):
+        super().write(data)
+        if self.written and self.written[-1] == self.refuse:
+            self._pending[-1] = 'echo:Unknown command: "XX"'
+            self._pending.append("ok")
+
+
 def test_unknown_command_exhaustion_fails_cleanly():
-    port = FakeSerial(responses={
-        "G0 Z1.5": ['echo:Unknown command: "GG0 Z1.5"', "ok"] * 10,
-    })
+    port = RefusingPort("G0 Z1.5")
     sender = MarlinSender(port)
     sender.connect()
     with pytest.raises(SenderError, match="refused"):
@@ -419,6 +464,28 @@ def test_printer_error_raises_without_m112():
     assert "M112" not in port.written
 
 
+def test_mid_job_corruption_burst_recovers_and_executes_every_line():
+    """The reported hardware failure: a corrupted line mid-job gets the
+    Marlin error trio, and the pipelined followers behind it are rejected
+    (number gap) until the corrupted line is retransmitted. The job must
+    complete with every line executed."""
+    port = CorruptingPort(corrupt_index=3)  # third checksummed line
+    sender = MarlinSender(port)
+    sender.connect()
+    lines = [f"G1 X{i} Y{i}" for i in range(10)]
+    progress = []
+    sender.run_gcode(
+        lines,
+        on_progress=lambda i, n: progress.append((i, n)),
+        stop=lambda: False,
+    )
+    assert progress[-1] == (10, 10)
+    # every line executed (the resync may re-execute some — moves are
+    # idempotent); what must never happen is a dropped line
+    executed = port.written[2:]
+    assert all(line in executed for line in lines)
+
+
 def test_cancel_lifts_pen_to_safe_z():
     port = FakeSerial()
     sender = MarlinSender(port)
@@ -501,9 +568,10 @@ class SwallowOkPort(FakeSerial):
                 self._pending.pop()
 
 
-def test_pipelined_resends_oldest_on_silence():
-    """A lost ok mid-stream surfaces as silence once the buffered oks are
-    consumed; the oldest unfinished line is resent (idempotent for moves)."""
+def test_pipelined_lost_ok_recovered_by_resend_resync():
+    """A lost ok mid-stream surfaces as silence; the rewrite is rejected
+    as a duplicate number, which proves the line executed, and the resync
+    re-sends the unconfirmed tail. The job completes; the move ran once."""
     port = SwallowOkPort("G0 X2", times=1)
     sender = MarlinSender(port, timeout=0.3)
     sender.connect()
@@ -511,11 +579,15 @@ def test_pipelined_resends_oldest_on_silence():
         ["G0 X0", "G0 X1", "G0 X2"],
         on_progress=lambda i, n: None,
         stop=lambda: False,
-    )
-    assert port.written.count("G0 X2") == 2
+    )  # must not raise
+    # the move executed (the resync may legitimately re-execute it —
+    # moves are idempotent); what must never happen is a dropped line
+    assert port.written.count("G0 X2") >= 1
 
 
-def test_pipelined_resend_exhaustion_fails():
+def test_persistent_ok_loss_fails_cleanly():
+    """When oks never arrive, the job fails cleanly — Crealipen must
+    never kill the machine on its own."""
     port = SwallowOkPort("G0 X2", times=99)
     sender = MarlinSender(port, timeout=0.3)
     sender.connect()

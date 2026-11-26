@@ -102,13 +102,31 @@ class MarlinSender:
     def send_line(self, line: str, retries: int = 2) -> None:
         """Send one command and wait for its ok (no pipelining). A command
         the printer refuses (echo:Unknown command) is resent with a fresh
-        line number: Marlin consumed the number without executing it, and a
-        dropped pen-state command draws stray lines (#21)."""
+        line number: Marlin consumed the number without executing it, and
+        a dropped pen-state command draws stray lines (#21)."""
+        self._write(line)
         for attempt in range(retries + 1):
-            self._write(line)
-            if self._await_ok(self._seq, line, retries) == "ok":
+            outcome = self._await_ok(line)
+            if outcome == "ok":
                 return
-        raise SenderError(f"printer refused {line!r} after {retries + 1} attempts")
+            if isinstance(outcome, int) and outcome > self._seq:
+                return  # the printer already executed it
+            if attempt == retries:
+                if outcome == "rejected":
+                    raise SenderError(
+                        f"printer refused {line!r} after {retries + 1} attempts"
+                    )
+                break
+            if outcome == "timeout":
+                # same number: the line may or may not have executed
+                self._write_numbered(self._seq, line)
+            elif isinstance(outcome, int):
+                # the printer discarded it and asked for it again by number
+                self._write_numbered(self._seq, line)
+            else:
+                # refused: fresh number, Marlin consumed the old one
+                self._write(line)
+        raise SenderError(f"printer stopped responding on {line!r}")
 
     def run_gcode(self, lines: list[str], on_progress, stop, safe_z: float = 5.0) -> None:
         """Stream lines with a window of in-flight commands so dense plots
@@ -116,69 +134,129 @@ class MarlinSender:
         polled between lines; when it returns True the stream stops feeding
         new lines, drains the in-flight ones, and lifts the pen (safe Z).
 
-        A refused command (echo:Unknown command) is re-queued at the front
-        and no fresh lines are fed until it has run, so later moves never
-        depend on a command that did not execute."""
+        Reliability model: oks are only trustworthy while the stream is
+        clean — a rejection trio carries an ok of its own, so a stale ok
+        can be misattributed to a line that never executed. So on any
+        `Resend:` (a rejected or corrupted line somewhere in the window)
+        the sender resynchronizes: numbering is reset with M110 N0, the
+        link is drained to quiet, and every unconfirmed line is re-sent
+        with clean one-ok-per-line accounting. Moves and pen-state
+        commands are idempotent, so re-execution is safe; dropping one is
+        not (#17, #21)."""
         total = len(lines)
         queue: deque[tuple[str, int]] = deque((line, 0) for line in lines)
-        inflight: deque[tuple[int, str, int]] = deque()  # (seq, line, refusals)
+        sent: deque[tuple[int, str, int]] = deque()  # (line number, command, refusals)
         done = 0
         halted = False
         holding = False  # a refused command awaits its retry; hold fresh lines
-        while done < total or (halted and inflight):
+        timeouts = 0
+        resyncs = 0
+
+        def confirm(count: int) -> None:
+            nonlocal done
+            done += count
+            on_progress(done, total)
+
+        while done < total or (halted and sent):
             if not halted and stop():
                 halted = True
-            while (not halted and len(inflight) < self.window and queue
-                   and not (holding and inflight)):
+            while (not halted and len(sent) < self.window and queue
+                   and (not holding or not sent)):
                 line, refusals = queue.popleft()
                 self._write(line)
-                inflight.append((self._seq, line, refusals))
-            if halted and not inflight:
+                sent.append((self._seq, line, refusals))
+            if halted and not sent:
                 self.send_line(f"G0 Z{safe_z:g}")  # lift pen
                 return
-            seq, line, refusals = inflight[0]
-            outcome = self._await_ok(seq, line)
-            inflight.popleft()
+            seq, line, refusals = sent[0]
+            outcome = self._await_ok(line)
             if outcome == "ok":
-                done += 1
-                holding = False
-                on_progress(done, total)
-            elif refusals >= 2:
-                raise SenderError(f"printer refused {line!r} after {refusals + 1} attempts")
-            else:
+                sent.popleft()
+                confirm(1)
+                if not sent:
+                    holding = False
+            elif outcome == "rejected":
+                # Marlin consumed the line number without executing the
+                # command: run it again (fresh number) once the window
+                # drains, so nothing depends on a command that never ran
+                sent.popleft()
+                if refusals >= 2:
+                    raise SenderError(
+                        f"printer refused {line!r} after {refusals + 1} attempts"
+                    )
                 queue.appendleft((line, refusals + 1))
                 holding = True
-
-    def _await_ok(self, seq: int, line: str, retries: int = 2) -> str:
-        """Wait for the ok of the in-flight line `seq`. On a silent timeout
-        or the printer's `Resend:` request the line is rewritten with its
-        original number, keeping the printer's expected-number count
-        aligned. Returns "ok", or "rejected" when Marlin refused the
-        command (echo:Unknown command)."""
-        for attempt in range(retries + 1):
-            if attempt:
-                log.warning("resending %r as line %d", line, seq)
+            elif outcome == "timeout":
+                timeouts += 1
+                if timeouts > 2:
+                    raise SenderError(f"printer stopped responding on {line!r}")
                 self._write_numbered(seq, line)
-            rejected = False
-            deadline = time.monotonic() + self.timeout
-            while time.monotonic() < deadline:
-                try:
-                    response = self._readline(timeout=2.0)
-                except SenderError:
-                    continue  # silence; keep waiting until the deadline
-                if response.startswith("ok"):
-                    return "rejected" if rejected else "ok"
-                if response.startswith("Error"):
-                    raise SenderError(f"printer error on {line!r}: {response}")
-                if response.startswith("Resend:"):
-                    break  # rewrite with the same number on the next attempt
-                if "Unknown command" in response:
-                    rejected = True
+            else:
+                # a Resend anywhere in the window means the ok stream can
+                # no longer be trusted: resynchronize and re-send every
+                # unconfirmed line
+                resyncs += 1
+                if resyncs > 2:
+                    raise SenderError(
+                        f"line number desync at {line!r}:"
+                        f" printer requested resend of {outcome}"
+                    )
+                log.warning("resync: printer requested resend of %d", outcome)
+                self._resync()
+                for s, l, r in reversed(sent):
+                    queue.appendleft((l, r))
+                sent.clear()
+                holding = False
+
+    def _resync(self) -> None:
+        """Reset line numbering (M110 N0) and drain the link until quiet.
+        Every buffered line now fails its number check and is flushed by
+        the printer, so the stream empties and re-sent lines get clean
+        one-ok-per-line accounting."""
+        self._write_plain("M110 N0")
+        self._seq = 0
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                self._readline(timeout=0.3)
+            except SenderError:
+                return  # quiet: nothing more buffered
+
+    def _await_ok(self, line: str) -> str | int:
+        """Read responses until the fate of the oldest in-flight line is
+        decided. Returns "ok" (an ok was consumed), "rejected" (Marlin
+        refused the command: echo:Unknown command before the ok),
+        "timeout" (silence for one timeout period), or the line number the
+        printer asked to resend — it has executed exactly the lines below
+        that number, which is the position oracle for the rewind in
+        run_gcode."""
+        rejected = False
+        deadline = time.monotonic() + self.timeout
+        while time.monotonic() < deadline:
+            try:
+                response = self._readline(timeout=2.0)
+            except SenderError:
+                continue  # silence; keep waiting until the deadline
+            if response.startswith("ok"):
+                return "rejected" if rejected else "ok"
+            if response.startswith("Error"):
+                # checksum/line-number errors are Marlin's resend request
+                # in error form: the Resend: line follows with the
+                # position. Anything else is fatal.
+                if ("checksum mismatch" in response
+                        or "Line Number is not" in response):
                     continue
-                # "echo:busy ..." and other chatter: keep waiting; each
-                # received line proves liveness, so extend the deadline —
-                # long homing sequences emit busy lines for well over 30s
-                deadline = time.monotonic() + self.timeout
-        raise SenderError(
-            f"printer stopped responding on {line!r} after {retries + 1} attempts"
-        )
+                raise SenderError(f"printer error on {line!r}: {response}")
+            if response.startswith("Resend:"):
+                try:
+                    return int(response.split(":", 1)[1].strip())
+                except ValueError:
+                    return "timeout"
+            if "Unknown command" in response:
+                rejected = True
+                continue
+            # "echo:busy ..." and other chatter: keep waiting; each
+            # received line proves liveness, so extend the deadline —
+            # long homing sequences emit busy lines for well over 30s
+            deadline = time.monotonic() + self.timeout
+        return "timeout"
