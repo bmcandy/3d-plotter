@@ -1,5 +1,5 @@
 name: Crealipen
-version: "0.4.0"
+version: "0.5.0"
 slug: crealipen
 description: Turn uploaded images into pen drawings on a CR-10s pen plotter
 url: https://github.com/bmcandy/3d-plotter

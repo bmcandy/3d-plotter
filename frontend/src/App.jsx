@@ -25,6 +25,14 @@ export default function App() {
   useEffect(() => {
     fetch("api/machine/profile").then((r) => r.json()).then(setProfile);
     fetch("api/drawings").then((r) => r.json()).then(setDrawings);
+    // reattach to a job that is still running after a page reload (#15)
+    fetch("api/jobs/active").then((r) => r.json()).then((active) => {
+      if (active && active.id != null) {
+        setJob(active);
+        setBusy(true);
+        watchJob(active.id);
+      }
+    });
   }, []);
 
   async function openDrawing(id) {

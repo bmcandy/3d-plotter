@@ -49,9 +49,9 @@ def _spacing_px(settings: dict, img: Image.Image) -> float:
 
 
 def _plot_paths(settings: dict, img: Image.Image) -> list[list[tuple[float, float]]]:
-    """Traced and infilled paths, simplified by the detail tolerance (mm).
-    Both the preview SVG and the G-code are built from these, so the
-    preview renders exactly what will be plotted."""
+    """Traced and infilled paths, with segments shorter than the detail
+    tolerance (mm) collapsed. Both the preview SVG and the G-code are built
+    from these, so the preview renders exactly what will be plotted."""
     paths = trace_image(img, threshold=int(settings.get("threshold", 128)))
     outlines, infill = apply_infill(paths, settings.get("infill", "none"),
                                     _spacing_px(settings, img))
@@ -176,6 +176,11 @@ def create_app(data_dir: str | Path = DATA_DIR, simulate: bool = False) -> FastA
         except BusyError as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
         return {"id": job_id}
+
+    @app.get("/api/jobs/active")
+    async def get_active_job():
+        # declared before /api/jobs/{job_id} so "active" is not eaten by it
+        return app.state.job_runner.active_job()
 
     @app.get("/api/jobs/{job_id}")
     async def get_job(job_id: int):
