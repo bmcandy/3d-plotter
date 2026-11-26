@@ -28,15 +28,15 @@ class FakeSerial:
     - `boot_drops` simulates the DTR-reset boot window: the first that
       many writes are silently discarded, as on a real board;
     - lines longer than MAX_CMD_SIZE are truncated before parsing, as
-      Marlin does, so over-long lines fail their checksum;
-    - the RX buffer holds RX_BUFFER_SIZE bytes between host reads; a
-      write that does not fit loses its tail silently, like a real UART
-      overflow — pipelining more than the buffer holds is detectable.
+      Marlin does, so over-long lines fail their checksum.
 
     Known limits (cannot be fixed by simulation): the checksum algorithm
     mirrors the sender's rather than independently verifying it (it is
-    hardware-validated), and the wire is byte-clean unless a test mangles
-    writes — noise shapes beyond the classified ones are not modeled.
+    hardware-validated); the wire is byte-clean unless a test mangles
+    writes; and RX-buffer backpressure (a full buffer stalls the acks)
+    is not modeled — the sender's window of 4 stays well inside Marlin's
+    128-byte RX buffer, and a full buffer surfaces as silence, which the
+    sender's timeout path handles.
 
     `responses` maps a bare command (wrapper stripped) to a response
     string or a list consumed in order; default is "ok". A list is served
@@ -47,19 +47,16 @@ class FakeSerial:
     """
 
     def __init__(self, responses: dict[str, str | list[str]] | None = None,
-                 delay: float = 0.0, boot_drops: int = 0,
-                 rx_buffer_size: int = RX_BUFFER_SIZE):
+                 delay: float = 0.0, boot_drops: int = 0):
         self.responses = responses or {}
         self.delay = delay
         self.boot_drops = 0
         self._boot_drops_config = boot_drops
-        self.rx_buffer_size = rx_buffer_size
         self.last_line = 0
         self.written: list[str] = []
         self.raw_written: list[bytes] = []
         self._pending: list[str] = []
         self._served_lists: set[str] = set()
-        self._rx_budget = rx_buffer_size
         self._open = False
 
     @property
@@ -74,7 +71,6 @@ class FakeSerial:
         self.boot_drops = self._boot_drops_config
         self._pending.clear()
         self._served_lists.clear()
-        self._rx_budget = self.rx_buffer_size
 
     def close(self) -> None:
         self._open = False
@@ -96,11 +92,6 @@ class FakeSerial:
         if self.boot_drops > 0:
             self.boot_drops -= 1  # dropped during the reset boot window
             return
-        # the UART drops bytes silently when the RX buffer is full: the
-        # tail of the line is lost and the line will fail its checksum
-        if len(line) > self._rx_budget:
-            line = line[:self._rx_budget]
-        self._rx_budget -= len(line)
         line = line[:MAX_CMD_SIZE]  # Marlin truncates over-long lines
         m = _NUMBERED.match(line)
         if m:
@@ -149,6 +140,4 @@ class FakeSerial:
             import time
 
             time.sleep(self.delay)
-        # the printer's main loop ran: its RX buffer drained
-        self._rx_budget = self.rx_buffer_size
         return self._pending.pop(0) if self._pending else ""

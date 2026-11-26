@@ -43,20 +43,32 @@ class MarlinSender:
         covers reconnecting to a board that did not reset) and counting
         restarts at 1."""
         deadline = time.monotonic() + self.boot_wait
-        while time.monotonic() < deadline:
-            try:
-                self._write_plain("M105")
-                response = self._readline(timeout=2.0)
+        ready = False
+        while time.monotonic() < deadline and not ready:
+            self._write_plain("M105")
+            probe_deadline = min(deadline, time.monotonic() + 2.0)
+            while time.monotonic() < probe_deadline:
+                try:
+                    response = self._readline(
+                        timeout=min(0.5, probe_deadline - time.monotonic())
+                    )
+                except SenderError:
+                    continue
                 if response.startswith("ok"):
+                    ready = True
                     break
-                # boot chatter or a lost response: poll again
-            except SenderError:
-                pass
-        else:
+                # Consume boot chatter without queuing another M105 behind it.
+        if not ready:
             raise SenderError("printer did not respond after connect (is it powered on?)")
         self._write_plain("M110 N0")
-        while True:
-            response = self._readline()
+        for attempt in range(3):
+            try:
+                response = self._readline()
+            except SenderError:
+                if attempt == 2:
+                    raise
+                self._write_plain("M110 N0")  # lost ok: try again
+                continue
             if response.startswith("ok"):
                 break
             if response.startswith("Error"):
@@ -99,11 +111,13 @@ class MarlinSender:
                     return line
         raise SenderError("timeout waiting for printer response")
 
-    def send_line(self, line: str, retries: int = 2) -> None:
+    def send_line(self, line: str, retries: int = 2, required: bool = True) -> None:
         """Send one command and wait for its ok (no pipelining). A command
         the printer refuses (echo:Unknown command) is resent with a fresh
         line number: Marlin consumed the number without executing it, and
-        a dropped pen-state command draws stray lines (#21)."""
+        a dropped pen-state command draws stray lines (#21). Optional
+        commands (required=False) are dropped after a single refusal —
+        firmware without them must not fail the connect."""
         self._write(line)
         for attempt in range(retries + 1):
             outcome = self._await_ok(line)
@@ -111,6 +125,9 @@ class MarlinSender:
                 return
             if isinstance(outcome, int) and outcome > self._seq:
                 return  # the printer already executed it
+            if outcome == "rejected" and not required:
+                log.info("printer refused optional command %r", line)
+                return
             if attempt == retries:
                 if outcome == "rejected":
                     raise SenderError(
@@ -134,28 +151,21 @@ class MarlinSender:
         polled between lines; when it returns True the stream stops feeding
         new lines, drains the in-flight ones, and lifts the pen (safe Z).
 
-        Reliability model: oks are only trustworthy while the stream is
-        clean — a rejection trio carries an ok of its own, so a stale ok
-        can be misattributed to a line that never executed. So on any
-        `Resend:` (a rejected or corrupted line somewhere in the window)
-        the sender resynchronizes: numbering is reset with M110 N0, the
-        link is drained to quiet, and every unconfirmed line is re-sent
-        with clean one-ok-per-line accounting. Moves and pen-state
-        commands are idempotent, so re-execution is safe; dropping one is
-        not (#17, #21)."""
+        Reliability model: the printer's `Resend: N` is the position
+        oracle — it has executed exactly the lines below N — so on a
+        resend the counter is rewound to N (correcting any ok that a
+        rejection trio misattributed) and lines N onward are re-sent with
+        their original numbers, as OctoPrint does. Re-execution is
+        idempotent for a pen plotter; dropping a line is not (#17, #21).
+        A silent printer fails the job cleanly if it never answers."""
         total = len(lines)
         queue: deque[tuple[str, int]] = deque((line, 0) for line in lines)
         sent: deque[tuple[int, str, int]] = deque()  # (line number, command, refusals)
+        history: deque[tuple[int, str]] = deque(maxlen=self.window * 4)
         done = 0
         halted = False
         holding = False  # a refused command awaits its retry; hold fresh lines
         timeouts = 0
-        resyncs = 0
-
-        def confirm(count: int) -> None:
-            nonlocal done
-            done += count
-            on_progress(done, total)
 
         while done < total or (halted and sent):
             if not halted and stop():
@@ -172,12 +182,10 @@ class MarlinSender:
             outcome = self._await_ok(line)
             if outcome == "ok":
                 sent.popleft()
-                confirm(1)
-                # progress: the recovery budgets measure a stuck link, not
-                # a noisy one — recurring corruption with progress between
-                # bursts must never exhaust them
+                history.append((seq, line))
+                done += 1
                 timeouts = 0
-                resyncs = 0
+                on_progress(done, total)
                 if not sent:
                     holding = False
             elif outcome == "rejected":
@@ -193,39 +201,100 @@ class MarlinSender:
                 holding = True
             elif outcome == "timeout":
                 timeouts += 1
-                if timeouts > 2:
+                if timeouts > 5:
                     raise SenderError(f"printer stopped responding on {line!r}")
                 self._write_numbered(seq, line)
-            else:
-                # a Resend anywhere in the window means the ok stream can
-                # no longer be trusted: resynchronize and re-send every
-                # unconfirmed line
-                resyncs += 1
-                if resyncs > 2:
-                    raise SenderError(
-                        f"line number desync at {line!r}:"
-                        f" printer requested resend of {outcome}"
-                    )
-                log.warning("resync: printer requested resend of %d", outcome)
-                self._resync()
-                for s, l, r in reversed(sent):
-                    queue.appendleft((l, r))
+            else:  # the printer asked for line `outcome`
+                # the backlog holds stale rejection trios from earlier
+                # cycles; drain it and act on the freshest position only
+                fresh = self._drain_to_quiet()
+                position = fresh if fresh is not None else outcome
+                if position <= done - len(history):
+                    # the request is older than the resend buffer: either
+                    # the request itself was corrupted in transit, or the
+                    # printer rebooted. Interrogate the true position.
+                    position = self._probe_position()
+                    if position is None or position <= done - len(history):
+                        raise SenderError(
+                            f"line number desync at {line!r}: printer"
+                            f" requested resend of {outcome}; it may have"
+                            " restarted mid-plot — re-home and re-plot"
+                        )
+                # the printer's position is ground truth: correct the
+                # counter and re-send everything from that line — both
+                # lines it already confirmed (within the resend buffer)
+                # and the unconfirmed window behind it
+                while sent and sent[0][0] < position:
+                    history.append(sent.popleft())
+                requeue = []
+                while history and history[-1][0] >= position:
+                    requeue.append(history.pop())
+                requeue.reverse()
+                requeue.extend((s, l) for s, l, _r in sent)
                 sent.clear()
-                holding = False
+                done = position - 1
+                on_progress(done, total)
+                for s, l in requeue:
+                    self._write_numbered(s, l)
+                    sent.append((s, l, 0))
+                timeouts = 0
 
-    def _resync(self) -> None:
-        """Reset line numbering (M110 N0) and drain the link until quiet.
-        Every buffered line now fails its number check and is flushed by
-        the printer, so the stream empties and re-sent lines get clean
-        one-ok-per-line accounting."""
-        self._write_plain("M110 N0")
-        self._seq = 0
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
+    def _probe_position(self) -> int | None:
+        """Interrogate the printer's true line position: a line that
+        deliberately fails its checksum makes Marlin answer with the
+        position in its error trio. The probe's answer travels over the
+        same noisy wire, so two consecutive agreeing probes are required;
+        None means the printer would not give a trustworthy answer."""
+        agreed = None
+        for _ in range(4):
+            self._write_plain("x*0")  # checksum without a line number
             try:
-                self._readline(timeout=0.3)
+                position = None
+                deadline = time.monotonic() + 5.0
+                while time.monotonic() < deadline:
+                    try:
+                        response = self._readline(timeout=2.0)
+                    except SenderError:
+                        continue
+                    if response.startswith("Resend:"):
+                        try:
+                            position = int(response.split(":", 1)[1].strip())
+                        except ValueError:
+                            position = None
+                        break
+                    if response.startswith("ok"):
+                        continue  # ack of the refused line; keep waiting
+                if position is None:
+                    return agreed if agreed is not None else None
+                if position == agreed:
+                    return position  # two probes agree
+                agreed = position
             except SenderError:
-                return  # quiet: nothing more buffered
+                return None
+        return None
+
+    def _drain_to_quiet(self) -> int | None:
+        """Consume every buffered response — stale rejection trios and
+        misattributed oks alike — and return the freshest `Resend:`
+        position seen, so the sender acts on the printer's current state
+        instead of a stale rejection. The printer's line counter only
+        grows (a reboot surfaces as silence, not as a stale trio), so the
+        freshest position is the trustworthy one."""
+        last = None
+        quiet = 0
+        deadline = time.monotonic() + 2.0
+        while quiet < 3 and time.monotonic() < deadline:
+            try:
+                response = self._readline(timeout=0.3)
+            except SenderError:
+                break  # quiet
+            quiet = 0
+            if response.startswith("Resend:"):
+                try:
+                    last = int(response.split(":", 1)[1].strip())
+                except ValueError:
+                    pass
+        return last
 
     def _await_ok(self, line: str) -> str | int:
         """Read responses until the fate of the oldest in-flight line is

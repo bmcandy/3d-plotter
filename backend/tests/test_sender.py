@@ -122,6 +122,8 @@ def test_connect_handshakes_through_boot_chatter():
     port = FakeSerial(responses={"M105": ["start", "echo:Marlin init", "ok"]})
     sender = MarlinSender(port)
     sender.connect()  # must handshake through the chatter
+    assert port.written.count("M105") == 1
+    assert not port._pending
     sender.send_line("G28")  # and work normally afterwards
     assert port.written[-1] == "G28"
 
@@ -158,6 +160,7 @@ def test_connect_resets_line_numbering_after_printer_reset():
     sender.connect()
     assert port.raw_written == [b"M105\n", b"M110 N0\n"]
     sender.send_line("G21")
+    # the prompt-clearing commands are plain: the first job line is N1
     assert re.match(rb"^N1 G21\*\d+\n$", port.raw_written[-1])
 
 
@@ -218,10 +221,25 @@ def test_other_printer_errors_still_fail_the_job():
         sender.send_line("G1 X1")
 
 
+def test_connect_does_not_dismiss_user_prompts_or_change_recovery():
+    """Connecting must not simulate an LCD click, answer host prompts,
+    or change the printer's power-loss recovery setting."""
+    port = FakeSerial()
+    sender = MarlinSender(port)
+    sender.connect()
+    assert port.written == ["M105", "M110 N0"]
+
+
+def test_connect_never_sends_prompt_or_recovery_commands():
+    port = FakeSerial()
+    MarlinSender(port).connect()
+    assert not any(command.startswith(("M876", "M108", "M413")) for command in port.written)
+
+
 def test_corrupted_line_is_resent_after_resend_request():
     """A duplicated byte on the wire (the CH340 corruption in #21) must be
     caught by the printer's checksum and the line resent — not dropped."""
-    port = CorruptingPort(corrupt_index=1)  # first checksummed command
+    port = CorruptingPort(corrupt_index=1)  # first checksummed write: the job command
     sender = MarlinSender(port)
     sender.connect()
     sender.send_line("G28")
@@ -274,7 +292,7 @@ def test_pipelined_unknown_command_retried_before_fresh_lines():
     port = FakeSerial(responses={
         "G0 Z1.5": ['echo:Unknown command: "GG0 Z1.5"', "ok", "ok"],
     })
-    sender = MarlinSender(port)
+    sender = MarlinSender(port, window=4)
     sender.connect()
     port.written.clear()
     sender.run_gcode(
@@ -288,10 +306,11 @@ def test_pipelined_unknown_command_retried_before_fresh_lines():
     assert port.written[5] == "G0 X40"
 
 
-def test_pipelined_corruption_resent_with_same_line_number():
-    """On the printer's Resend: request the line is rewritten with its
-    original number, keeping the printer's expected-number count aligned."""
-    port = CorruptingPort(corrupt_index=1)
+def test_pipelined_corruption_recovers_via_resync():
+    """A corrupted line mid-stream triggers a resync: numbering resets
+    (M110 N0) and the unconfirmed window is re-sent from N1 — the job
+    completes and no line is dropped."""
+    port = CorruptingPort(corrupt_index=4)  # first job command
     sender = MarlinSender(port)
     sender.connect()
     sender.run_gcode(
@@ -299,11 +318,8 @@ def test_pipelined_corruption_resent_with_same_line_number():
         on_progress=lambda i, n: None,
         stop=lambda: False,
     )
-    resent = [raw for raw in port.raw_written if b"G0 X0" in raw]
-    assert len(resent) == 2
-    # both the corrupted original and the resend carry the same line number
-    numbers = {raw.split(b" ")[0] for raw in resent}
-    assert len(numbers) == 1
+    executed = port.written[2:]
+    assert all(line in executed for line in ["G0 X0", "G0 X1", "G0 X2"])
 
 
 def test_missing_serial_device_gives_actionable_error(monkeypatch, tmp_path):
@@ -517,7 +533,7 @@ def test_window_keeps_pipelining_inside_the_rx_buffer():
     """The sender's window must never outrun Marlin's 128-byte RX buffer:
     a long plot streams to completion with every line intact."""
     port = FakeSerial()
-    sender = MarlinSender(port)
+    sender = MarlinSender(port, window=4)
     sender.connect()
     lines = [f"G1 X{i % 200} Y{i % 200} F1500" for i in range(200)]
     progress = []
@@ -575,6 +591,37 @@ def test_recurring_corruption_across_a_long_plot_recovers():
     assert all(line in executed for line in lines)  # none dropped
 
 
+def test_corrupted_resend_request_is_probed_not_trusted():
+    """Wire noise corrupts the printer->host direction too: a 'Resend: 4'
+    that should read 'Resend: 24' must not fail the job. The sender
+    interrogates the printer's true position (a deliberately-bad line
+    makes Marlin answer with it) and recovers from there."""
+    class BogusResendPort(FakeSerial):
+        def __init__(self):
+            super().__init__()
+            self.reads = 0
+
+        def readline(self):
+            self.reads += 1
+            if self.reads == 40 and not self._pending:
+                return "Resend: 4"  # corrupted in transit (true: ~20)
+            return super().readline()
+
+    port = BogusResendPort()
+    sender = MarlinSender(port)
+    sender.connect()
+    lines = [f"G1 X{i % 200} Y{i % 200} F1500" for i in range(200)]
+    progress = []
+    sender.run_gcode(
+        lines,
+        on_progress=lambda i, n: progress.append((i, n)),
+        stop=lambda: False,
+    )
+    assert progress[-1] == (200, 200)
+    executed = port.written[2:]
+    assert all(line in executed for line in lines)  # none dropped
+
+
 def test_cancel_lifts_pen_to_safe_z():
     port = FakeSerial()
     sender = MarlinSender(port)
@@ -616,7 +663,7 @@ def test_run_gcode_pipelines_lines_within_window():
     """Several lines must be in flight before the first ok is consumed —
     send-one-wait-for-one makes dense plots latency-bound."""
     port = RecordingPort()
-    sender = MarlinSender(port)
+    sender = MarlinSender(port, window=4)
     sender.connect()
     port.events.clear()
     sender.run_gcode(
@@ -674,16 +721,41 @@ def test_pipelined_lost_ok_recovered_by_resend_resync():
     assert port.written.count("G0 X2") >= 1
 
 
-def test_persistent_ok_loss_fails_cleanly():
-    """When oks never arrive, the job fails cleanly — Crealipen must
-    never kill the machine on its own."""
+def test_persistent_ok_loss_recovered_by_position_oracle():
+    """Even when oks never reach us, the printer's duplicate-number
+    rejection reveals its position and the job completes — the resend
+    buffer needs nothing re-sent because everything executed."""
     port = SwallowOkPort("G0 X2", times=99)
     sender = MarlinSender(port, timeout=0.3)
     sender.connect()
-    with pytest.raises(SenderError):
-        sender.run_gcode(
-            ["G0 X0", "G0 X1", "G0 X2"],
-            on_progress=lambda i, n: None,
-            stop=lambda: False,
-        )
-    assert "M112" not in port.written
+    sender.run_gcode(
+        ["G0 X0", "G0 X1", "G0 X2"],
+        on_progress=lambda i, n: None,
+        stop=lambda: False,
+    )  # must not raise
+    assert port.written.count("G0 X2") == 1
+
+
+def test_truly_silent_printer_fails_cleanly():
+    """A printer that never answers (and never reveals its position)
+    fails the job cleanly — Crealipen must never kill the machine."""
+    from app.db import Database
+    from app.jobs import JobRunner
+
+    class DeafPort(FakeSerial):
+        def readline(self):
+            return ""
+
+    db = Database(":memory:")
+    runner = JobRunner(db, lambda: MarlinSender(DeafPort(), timeout=0.2, boot_wait=0.3))
+    job_id = runner.start(1, ["G28"])
+    import time as _t
+
+    job = None
+    for _ in range(200):
+        job = db.get_job(job_id)
+        if job["status"] not in ("pending", "running"):
+            break
+        _t.sleep(0.05)
+    assert job["status"] == "failed"
+    assert "M112" not in str(job["error"])

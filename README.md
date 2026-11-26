@@ -23,6 +23,21 @@ cd ../frontend && npm install && npm run dev
 
 The app runs against a `FakeSerial` simulator in dev; no hardware required.
 
+### Testing with a physical printer
+
+After installing the development dependencies above, start both servers from
+the repository root:
+
+```sh
+./dev.sh [SERIAL_DEVICE]
+```
+
+The script uses the optional serial-device argument first, then `SERIAL_PORT`,
+then the first detected `/dev/ttyACM*` or `/dev/ttyUSB*` device. It waits for
+the backend before starting the frontend at <http://localhost:5173>. Use
+`./dev.sh --simulate` to run with a fake printer instead. Press Ctrl-C to stop
+both servers.
+
 ## Contributing
 
 Work happens on feature branches: branch off `main`, open a pull request, and

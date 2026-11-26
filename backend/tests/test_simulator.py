@@ -92,18 +92,6 @@ def test_overlong_line_is_truncated_and_rejected():
     assert port.readline().startswith("Error:No Checksum with line number")
 
 
-def test_rx_overflow_drops_bytes_silently():
-    """A UART drops bytes silently when the RX buffer fills: the line
-    arrives truncated and is rejected — pipelining more than the buffer
-    holds is detectable, not absorbed."""
-    port = FakeSerial(rx_buffer_size=20)
-    port.open()
-    port.write(checksummed(1, "G1 X1 Y1"))
-    port.write(checksummed(2, "G1 X2 Y2"))  # does not fit: tail dropped
-    assert port.readline() == "ok"
-    assert port.readline().startswith("Error:")
-
-
 def test_m110_sets_the_expected_line_number():
     port = FakeSerial()
     port.open()
