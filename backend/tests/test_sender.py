@@ -183,6 +183,31 @@ def test_line_number_error_is_recovered_not_fatal():
     sender.send_line("G1 X1")  # must not raise
 
 
+def test_no_line_number_with_checksum_error_is_recovered():
+    """The exact hardware failure from 0.5.2: wire noise mangles a line's
+    leading bytes so Marlin sees a checksum with no line number and
+    answers 'Error:No Line Number with checksum, Last Line: 0' + Resend.
+    That is a resend request, not a job failure."""
+    port = FakeSerial(responses={
+        "G1 X1": ["Error:No Line Number with checksum, Last Line: 0",
+                  "Resend: 1", "ok", "ok"],
+    })
+    sender = MarlinSender(port)
+    sender.connect()
+    sender.send_line("G1 X1")  # must not raise
+    assert len([raw for raw in port.raw_written if b"G1 X1" in raw]) == 2
+
+
+def test_no_checksum_with_line_number_error_is_recovered():
+    port = FakeSerial(responses={
+        "G1 X1": ["Error:No Checksum with line number, Last Line: 0",
+                  "Resend: 1", "ok", "ok"],
+    })
+    sender = MarlinSender(port)
+    sender.connect()
+    sender.send_line("G1 X1")  # must not raise
+
+
 def test_other_printer_errors_still_fail_the_job():
     port = FakeSerial(responses={"G1 X1": "Error:Thermal Runaway"})
     sender = MarlinSender(port)
@@ -484,6 +509,49 @@ def test_mid_job_corruption_burst_recovers_and_executes_every_line():
     # idempotent); what must never happen is a dropped line
     executed = port.written[2:]
     assert all(line in executed for line in lines)
+
+
+def test_window_keeps_pipelining_inside_the_rx_buffer():
+    """The sender's window must never outrun Marlin's 128-byte RX buffer:
+    a long plot streams to completion with every line intact."""
+    port = FakeSerial()
+    sender = MarlinSender(port)
+    sender.connect()
+    lines = [f"G1 X{i % 200} Y{i % 200} F1500" for i in range(200)]
+    progress = []
+    sender.run_gcode(
+        lines,
+        on_progress=lambda i, n: progress.append((i, n)),
+        stop=lambda: False,
+    )
+    assert progress[-1] == (200, 200)
+    assert port.written[2:] == lines  # handshake aside: all executed, in order
+
+
+def test_ok_with_payload_is_an_ok():
+    """Real firmware acks M105 with 'ok T:56.3' etc.; anything starting
+    with ok acks the line."""
+    port = FakeSerial(responses={"M105": "ok T:56.3 /0.0 /0.0 @:0.0"})
+    sender = MarlinSender(port)
+    sender.connect()  # the handshake's M105 is acked with a payload
+    sender.send_line("G28")  # and the job proceeds normally
+
+
+def test_blocking_command_under_pipelining():
+    """A long homing mid-stream acks late, behind echo:busy chatter; the
+    pipelined window must wait it out, not resend over it."""
+    port = FakeSerial(
+        responses={"G28": ["echo:busy: processing"] * 4 + ["ok"]},
+        delay=0.1,
+    )
+    sender = MarlinSender(port, timeout=1.0)
+    sender.connect()
+    sender.run_gcode(
+        ["G28", "G0 X1", "G0 X2"],
+        on_progress=lambda i, n: None,
+        stop=lambda: False,
+    )  # must not raise
+    assert port.written.count("G28") == 1  # never resent over the chatter
 
 
 def test_cancel_lifts_pen_to_safe_z():
