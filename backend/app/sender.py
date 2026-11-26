@@ -173,6 +173,11 @@ class MarlinSender:
             if outcome == "ok":
                 sent.popleft()
                 confirm(1)
+                # progress: the recovery budgets measure a stuck link, not
+                # a noisy one — recurring corruption with progress between
+                # bursts must never exhaust them
+                timeouts = 0
+                resyncs = 0
                 if not sent:
                     holding = False
             elif outcome == "rejected":

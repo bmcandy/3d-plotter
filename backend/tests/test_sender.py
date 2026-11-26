@@ -7,19 +7,21 @@ from app.simulator import FakeSerial
 
 
 class CorruptingPort(FakeSerial):
-    """Mangles the checksum of the nth checksummed write, like the flaky
-    USB-serial adapter in #21: the printer must catch it and request a
-    resend."""
+    """Mangles the checksum of the nth checksummed write(s), like the
+    flaky USB-serial adapter in #21: the printer must catch it and
+    request a resend."""
 
-    def __init__(self, corrupt_index: int):
+    def __init__(self, corrupt_index: int | list[int]):
         super().__init__()
-        self.corrupt_index = corrupt_index
+        self.corrupt_indices = set(
+            [corrupt_index] if isinstance(corrupt_index, int) else corrupt_index
+        )
         self.checksummed = 0
 
     def write(self, data):
         if isinstance(data, bytes) and b"*" in data:
             self.checksummed += 1
-            if self.checksummed == self.corrupt_index:
+            if self.checksummed in self.corrupt_indices:
                 star = data.rindex(b"*")
                 data = data[:star + 1] + b"0\n"  # wrong checksum
         return super().write(data)
@@ -552,6 +554,25 @@ def test_blocking_command_under_pipelining():
         stop=lambda: False,
     )  # must not raise
     assert port.written.count("G28") == 1  # never resent over the chatter
+
+
+def test_recurring_corruption_across_a_long_plot_recovers():
+    """Wire noise recurs (~every 55 lines on this machine): a long plot
+    must survive repeated corruption bursts as long as progress continues
+    between them. Only a link that stops making progress may fail."""
+    port = CorruptingPort(corrupt_index=[7, 15, 40, 80, 160, 320])
+    sender = MarlinSender(port)
+    sender.connect()
+    lines = [f"G1 X{i % 200} Y{i % 200} F1500" for i in range(200)]
+    progress = []
+    sender.run_gcode(
+        lines,
+        on_progress=lambda i, n: progress.append((i, n)),
+        stop=lambda: False,
+    )
+    assert progress[-1] == (200, 200)
+    executed = port.written[2:]
+    assert all(line in executed for line in lines)  # none dropped
 
 
 def test_cancel_lifts_pen_to_safe_z():
