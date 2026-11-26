@@ -7,19 +7,21 @@ from app.simulator import FakeSerial
 
 
 class CorruptingPort(FakeSerial):
-    """Mangles one write's checksum, like the flaky USB-serial adapter
-    in #21: the printer must catch it and request a resend."""
+    """Mangles the checksum of the nth checksummed write, like the flaky
+    USB-serial adapter in #21: the printer must catch it and request a
+    resend."""
 
     def __init__(self, corrupt_index: int):
         super().__init__()
         self.corrupt_index = corrupt_index
-        self.writes = 0
+        self.checksummed = 0
 
     def write(self, data):
-        self.writes += 1
-        if self.writes == self.corrupt_index and isinstance(data, bytes):
-            star = data.rindex(b"*")
-            data = data[:star + 1] + b"0\n"  # wrong checksum
+        if isinstance(data, bytes) and b"*" in data:
+            self.checksummed += 1
+            if self.checksummed == self.corrupt_index:
+                star = data.rindex(b"*")
+                data = data[:star + 1] + b"0\n"  # wrong checksum
         return super().write(data)
 
 
@@ -145,10 +147,22 @@ def test_writes_are_newline_terminated_checksummed_bytes():
     assert re.match(rb"^N\d+ G28\*\d+\n$", raw)
 
 
+def test_connect_resets_line_numbering_after_printer_reset():
+    """Opening the port resets the printer (DTR pulse), so its expected
+    line number is 0: the handshake probes must be unnumbered, M110 N0
+    realigns the count, and the first job line is N1."""
+    port = FakeSerial()
+    sender = MarlinSender(port)
+    sender.connect()
+    assert port.raw_written == [b"M105\n", b"M110 N0\n"]
+    sender.send_line("G21")
+    assert re.match(rb"^N1 G21\*\d+\n$", port.raw_written[-1])
+
+
 def test_corrupted_line_is_resent_after_resend_request():
     """A duplicated byte on the wire (the CH340 corruption in #21) must be
     caught by the printer's checksum and the line resent — not dropped."""
-    port = CorruptingPort(corrupt_index=2)  # first command after the handshake
+    port = CorruptingPort(corrupt_index=1)  # first checksummed command
     sender = MarlinSender(port)
     sender.connect()
     sender.send_line("G28")
@@ -205,7 +219,7 @@ def test_pipelined_unknown_command_retried_before_fresh_lines():
 def test_pipelined_corruption_resent_with_same_line_number():
     """On the printer's Resend: request the line is rewritten with its
     original number, keeping the printer's expected-number count aligned."""
-    port = CorruptingPort(corrupt_index=2)
+    port = CorruptingPort(corrupt_index=1)
     sender = MarlinSender(port)
     sender.connect()
     sender.run_gcode(

@@ -36,18 +36,32 @@ class MarlinSender:
     def _wait_for_printer(self) -> None:
         """Opening the port resets Arduino-based boards (DTR pulse); Marlin
         boots for a few seconds and drops commands sent during boot. Poll
-        M105 until an ok comes back, tolerating boot chatter."""
+        M105 until an ok comes back, tolerating boot chatter. The probes
+        are unnumbered — the freshly reset printer expects line 1 and
+        cannot reconcile numbered probes it may have missed. Once the
+        printer answers, M110 N0 aligns line numbering explicitly (it also
+        covers reconnecting to a board that did not reset) and counting
+        restarts at 1."""
         deadline = time.monotonic() + self.boot_wait
         while time.monotonic() < deadline:
             try:
-                self._write("M105")
+                self._write_plain("M105")
                 response = self._readline(timeout=2.0)
                 if response.startswith("ok"):
-                    return
+                    break
                 # boot chatter or a lost response: poll again
             except SenderError:
                 pass
-        raise SenderError("printer did not respond after connect (is it powered on?)")
+        else:
+            raise SenderError("printer did not respond after connect (is it powered on?)")
+        self._write_plain("M110 N0")
+        while True:
+            response = self._readline()
+            if response.startswith("ok"):
+                break
+            if response.startswith("Error"):
+                raise SenderError(f"printer error on M110 N0: {response}")
+        self._seq = 0
 
     def close(self) -> None:
         self.port.close()
@@ -58,6 +72,10 @@ class MarlinSender:
         for ch in payload:
             cs ^= ord(ch)
         return cs
+
+    def _write_plain(self, line: str) -> None:
+        log.info(">> %s", line)
+        self.port.write((line + "\n").encode())
 
     def _write(self, line: str) -> None:
         self._seq += 1
