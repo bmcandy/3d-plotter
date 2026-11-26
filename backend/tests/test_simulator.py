@@ -68,6 +68,42 @@ def test_line_number_without_checksum_is_rejected():
     assert port.readline() == "ok"
 
 
+def test_open_reboots_the_printer():
+    """Opening the port reboots the board: line numbering, pending output
+    and one-off glitches all reset, so a reconnect starts clean."""
+    port = FakeSerial()
+    port.open()
+    port.write(checksummed(1, "G28"))
+    assert port.readline() == "ok"
+    port.close()
+    port.open()
+    port.write(checksummed(1, "G28"))  # accepted again: the count reset
+    assert port.written == ["G28", "G28"]
+
+
+def test_overlong_line_is_truncated_and_rejected():
+    """Marlin truncates lines at MAX_CMD_SIZE; the truncation cuts off
+    the checksum, so the line is rejected and not executed."""
+    port = FakeSerial()
+    port.open()
+    long_cmd = "G1 " + "X9" * 60  # well over 96 bytes
+    port.write(checksummed(1, long_cmd))
+    assert port.written == []
+    assert port.readline().startswith("Error:No Checksum with line number")
+
+
+def test_rx_overflow_drops_bytes_silently():
+    """A UART drops bytes silently when the RX buffer fills: the line
+    arrives truncated and is rejected — pipelining more than the buffer
+    holds is detectable, not absorbed."""
+    port = FakeSerial(rx_buffer_size=20)
+    port.open()
+    port.write(checksummed(1, "G1 X1 Y1"))
+    port.write(checksummed(2, "G1 X2 Y2"))  # does not fit: tail dropped
+    assert port.readline() == "ok"
+    assert port.readline().startswith("Error:")
+
+
 def test_m110_sets_the_expected_line_number():
     port = FakeSerial()
     port.open()
