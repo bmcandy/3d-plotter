@@ -43,6 +43,31 @@ def test_bad_checksum_is_rejected_with_marlins_error_trio():
     assert port.readline() == "ok"
 
 
+def test_checksum_without_line_number_is_rejected():
+    """Wire noise can strip a line's leading bytes: a checksummed line
+    with no parseable N number gets Marlin's 'No Line Number with
+    checksum' trio and does not execute."""
+    port = FakeSerial()
+    port.open()
+    port.write(b"G28*97\n")
+    assert port.written == []
+    assert port.readline() == "Error:No Line Number with checksum, Last Line: 0"
+    assert port.readline() == "Resend: 1"
+    assert port.readline() == "ok"
+
+
+def test_line_number_without_checksum_is_rejected():
+    """A numbered line with no checksum gets Marlin's 'No Checksum with
+    line number' trio and does not execute."""
+    port = FakeSerial()
+    port.open()
+    port.write(b"N1 G28\n")
+    assert port.written == []
+    assert port.readline() == "Error:No Checksum with line number, Last Line: 0"
+    assert port.readline() == "Resend: 1"
+    assert port.readline() == "ok"
+
+
 def test_m110_sets_the_expected_line_number():
     port = FakeSerial()
     port.open()

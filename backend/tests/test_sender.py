@@ -183,6 +183,31 @@ def test_line_number_error_is_recovered_not_fatal():
     sender.send_line("G1 X1")  # must not raise
 
 
+def test_no_line_number_with_checksum_error_is_recovered():
+    """The exact hardware failure from 0.5.2: wire noise mangles a line's
+    leading bytes so Marlin sees a checksum with no line number and
+    answers 'Error:No Line Number with checksum, Last Line: 0' + Resend.
+    That is a resend request, not a job failure."""
+    port = FakeSerial(responses={
+        "G1 X1": ["Error:No Line Number with checksum, Last Line: 0",
+                  "Resend: 1", "ok", "ok"],
+    })
+    sender = MarlinSender(port)
+    sender.connect()
+    sender.send_line("G1 X1")  # must not raise
+    assert len([raw for raw in port.raw_written if b"G1 X1" in raw]) == 2
+
+
+def test_no_checksum_with_line_number_error_is_recovered():
+    port = FakeSerial(responses={
+        "G1 X1": ["Error:No Checksum with line number, Last Line: 0",
+                  "Resend: 1", "ok", "ok"],
+    })
+    sender = MarlinSender(port)
+    sender.connect()
+    sender.send_line("G1 X1")  # must not raise
+
+
 def test_other_printer_errors_still_fail_the_job():
     port = FakeSerial(responses={"G1 X1": "Error:Thermal Runaway"})
     sender = MarlinSender(port)

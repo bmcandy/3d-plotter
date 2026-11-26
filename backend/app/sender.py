@@ -240,11 +240,12 @@ class MarlinSender:
             if response.startswith("ok"):
                 return "rejected" if rejected else "ok"
             if response.startswith("Error"):
-                # checksum/line-number errors are Marlin's resend request
+                # Marlin's serial-receiver errors (checksum mismatch, line
+                # number problems in any wording) are its resend request
                 # in error form: the Resend: line follows with the
                 # position. Anything else is fatal.
-                if ("checksum mismatch" in response
-                        or "Line Number is not" in response):
+                if ("checksum" in response.lower()
+                        or "line number" in response.lower()):
                     continue
                 raise SenderError(f"printer error on {line!r}: {response}")
             if response.startswith("Resend:"):

@@ -83,6 +83,15 @@ class FakeSerial:
                 return
             self.last_line = n
             line = cmd
+        elif "*" in line:
+            # a checksum with no parseable line number: wire noise mangled
+            # the line's leading bytes
+            self._reject(f"Error:No Line Number with checksum, Last Line: {self.last_line}")
+            return
+        elif re.match(r"N\d+", line):
+            # a line number with no checksum
+            self._reject(f"Error:No Checksum with line number, Last Line: {self.last_line}")
+            return
         elif line.startswith("M110"):
             m110 = re.search(r"N(\d+)", line)
             if m110:
