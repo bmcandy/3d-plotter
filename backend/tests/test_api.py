@@ -158,6 +158,30 @@ def test_job_runs_to_completion_against_simulator(tmp_path):
     assert job["progress"] == 100
 
 
+def test_active_job_endpoint_returns_null_when_idle(tmp_path):
+    """With no Job running the UI must see an explicit null (#15)."""
+    c = make_client(tmp_path)
+    assert c.get("/api/jobs/active").json() is None
+
+
+def test_active_job_endpoint_returns_running_job(tmp_path):
+    """After a page reload the UI finds the running Job via
+    GET /api/jobs/active (#15). The route must win over /api/jobs/{id}."""
+    c = make_client(tmp_path)
+    runner = c.app.state.job_runner
+    job_id = c.app.state.db.create_job(1)
+    c.app.state.db.update_job(job_id, status="running", progress=10)
+    runner._active_job_id = job_id
+    try:
+        r = c.get("/api/jobs/active")
+    finally:
+        runner._active_job_id = None
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == job_id
+    assert body["status"] == "running"
+
+
 def test_second_job_refused_while_machine_busy(tmp_path):
     c = make_client(tmp_path)
     d = c.post(

@@ -41,6 +41,14 @@ velocity (move distance divided by feed rate, no acceleration model). Shown
 before plotting and, during a Job, as time remaining.
 _Avoid_: ETA, forecast
 
+**Detail Tolerance**:
+The minimum length of a plotted segment, in mm: segments shorter than it
+are collapsed into longer ones, and longer segments are never reshaped.
+A Drawing setting; lower it for finer detail, raise it to reduce per-move
+overhead on noisy traces.
+_Avoid_: simplification, point reduction (it does not reduce point counts
+on long features)
+
 **Sender**:
 The minimal Marlin serial client that streams G-code lines and waits for `ok`
 acknowledgements. Owns the serial port exclusively.

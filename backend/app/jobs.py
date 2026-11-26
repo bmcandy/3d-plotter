@@ -22,6 +22,18 @@ class JobRunner:
     def busy(self) -> bool:
         return self._active_job_id is not None
 
+    def active_job(self) -> dict | None:
+        """The running Job, or None. Lets the UI reattach to a Job after a
+        page reload (#15); a Job never survives a restart (ADR 0002), so a
+        terminal Job is not reported."""
+        job_id = self._active_job_id
+        if job_id is None:
+            return None
+        job = self.db.get_job(job_id)
+        if job is None or job["status"] not in ("pending", "running"):
+            return None
+        return job
+
     def start(self, drawing_id: int, gcode: list[str]) -> int:
         with self._lock:
             if self._active_job_id is not None:

@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 from PIL import Image
 
@@ -58,8 +60,10 @@ def test_contours_to_svg_contains_path_and_viewbox():
     assert "<path" in svg
 
 
-def test_simplify_collapses_collinear_points():
-    path = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (3.0, 0.0)]
+def test_simplify_collapses_micro_segments():
+    # points every 0.05mm along a 3mm line, tolerance 0.1: the micro
+    # segments collapse into a single straight segment
+    path = [(i * 0.05, 0.0) for i in range(61)]
     assert simplify_paths([path], tolerance=0.1) == [[(0.0, 0.0), (3.0, 0.0)]]
 
 
@@ -68,14 +72,29 @@ def test_simplify_preserves_corners():
     assert simplify_paths([path], tolerance=0.1) == [path]
 
 
-def test_simplify_tolerance_drops_small_deviation_keeps_large():
+def test_simplify_never_alters_segments_longer_than_tolerance():
+    """Tolerance is a minimum segment length, not a shape budget: a
+    detailed feature with segments above the tolerance must survive
+    untouched, whatever its shape (#18)."""
+    path = [(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (4.0, 2.0), (4.0, 0.0)]
+    assert simplify_paths([path], tolerance=0.5) == [path]
+
+
+def test_simplify_keeps_deviation_points_on_long_segments():
+    """A point that continues a long segment is kept even if its deviation
+    is tiny — only segment length decides (#18)."""
     path = [(0.0, 0.0), (1.0, 0.3), (2.0, 0.0)]
-    assert simplify_paths([path], tolerance=0.5) == [[(0.0, 0.0), (2.0, 0.0)]]
-    assert simplify_paths([path], tolerance=0.2) == [path]
+    assert simplify_paths([path], tolerance=0.5) == [path]
 
 
 def test_simplify_keeps_closed_rings_closed():
-    path = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]
+    # a ring traced from 0.05mm segments collapses but stays a closed ring
+    path = [
+        (1.0 + 0.05 * math.cos(t / 10 * 2 * math.pi),
+         1.0 + 0.05 * math.sin(t / 10 * 2 * math.pi))
+        for t in range(11)
+    ]
+    path.append(path[0])
     out = simplify_paths([path], tolerance=0.1)[0]
     assert out[0] == out[-1]
     assert len(out) < len(path)

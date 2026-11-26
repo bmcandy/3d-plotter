@@ -47,44 +47,61 @@ def trace_image(img: Image.Image, threshold: int, min_area: float = 25.0) -> lis
     return paths
 
 
-def _simplify(path: list[tuple[float, float]], tolerance: float) -> list[tuple[float, float]]:
+def _seg_dist(a, p, b) -> float:
+    """Distance from point p to the segment a-b."""
+    ax, ay = a
+    px, py = p
+    dx, dy = b[0] - ax, b[1] - ay
+    seg2 = dx * dx + dy * dy
+    if seg2 == 0.0:
+        return math.hypot(px - ax, py - ay)
+    t = min(1.0, max(0.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
+    return math.hypot(px - (ax + t * dx), py - (ay + t * dy))
+
+
+def _drop_collinear(path: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Remove points that lie on the straight line between their neighbours:
+    pure move-count reduction with no shape change at all."""
     if len(path) <= 2:
         return path
-    keep = [False] * len(path)
-    keep[0] = keep[-1] = True
-    stack = [(0, len(path) - 1)]
-    while stack:
-        a, b = stack.pop()
-        if b <= a + 1:
-            continue
-        ax, ay = path[a]
-        dx, dy = path[b][0] - ax, path[b][1] - ay
-        seg2 = dx * dx + dy * dy
-        best_d, best_i = -1.0, -1
-        for i in range(a + 1, b):
-            px, py = path[i]
-            if seg2 == 0.0:
-                d = math.hypot(px - ax, py - ay)
-            else:
-                t = min(1.0, max(0.0, ((px - ax) * dx + (py - ay) * dy) / seg2))
-                d = math.hypot(px - (ax + t * dx), py - (ay + t * dy))
-            if d > best_d:
-                best_d, best_i = d, i
-        if best_d > tolerance:
-            keep[best_i] = True
-            stack.append((a, best_i))
-            stack.append((best_i, b))
-    return [pt for pt, k in zip(path, keep) if k]
+    out = [path[0]]
+    for prev, pt, nxt in zip(path, path[1:], path[2:]):
+        if _seg_dist(prev, pt, nxt) > 1e-6:
+            out.append(pt)
+    out.append(path[-1])
+    return out
+
+
+def _merge_micro(path: list[tuple[float, float]], tolerance: float) -> list[tuple[float, float]]:
+    """Drop points until the accumulated arc length since the last kept
+    point reaches `tolerance`: runs of sub-tolerance segments merge into
+    segments of at least that length; longer segments are never altered."""
+    if len(path) <= 2:
+        return path
+    out = [path[0]]
+    acc = 0.0
+    for pt in path[1:-1]:
+        acc += math.dist(out[-1], pt)
+        if acc >= tolerance:
+            out.append(pt)
+            acc = 0.0
+    out.append(path[-1])
+    if len(out) > 1 and out[-1] == out[-2]:  # fully collapsed ring
+        out.pop()
+    return out
 
 
 def simplify_paths(
     paths: list[list[tuple[float, float]]], tolerance: float
 ) -> list[list[tuple[float, float]]]:
-    """Douglas-Peucker simplification; tolerance is in the paths' own units.
-    Collapses micro-segments so plots are not dominated by per-move overhead."""
+    """Disregard lines shorter than `tolerance` (in the paths' own units):
+    collinear points are dropped exactly, and runs of sub-tolerance
+    segments merge into segments of at least that length. Longer segments
+    are never reshaped — the tolerance is a minimum segment length, not a
+    point budget (#18)."""
     if tolerance <= 0:
         return paths
-    return [_simplify(path, tolerance) for path in paths]
+    return [_merge_micro(_drop_collinear(path), tolerance) for path in paths]
 
 
 def contours_to_svg(paths: list[list[tuple[float, float]]], width: float, height: float) -> str:

@@ -1,7 +1,26 @@
+import re
+
 import pytest
 
 from app.sender import MarlinSender, SenderError
 from app.simulator import FakeSerial
+
+
+class CorruptingPort(FakeSerial):
+    """Mangles one write's checksum, like the flaky USB-serial adapter
+    in #21: the printer must catch it and request a resend."""
+
+    def __init__(self, corrupt_index: int):
+        super().__init__()
+        self.corrupt_index = corrupt_index
+        self.writes = 0
+
+    def write(self, data):
+        self.writes += 1
+        if self.writes == self.corrupt_index and isinstance(data, bytes):
+            star = data.rindex(b"*")
+            data = data[:star + 1] + b"0\n"  # wrong checksum
+        return super().write(data)
 
 
 def test_send_line_waits_for_ok():
@@ -113,13 +132,92 @@ def test_connect_fails_cleanly_when_printer_silent():
         sender.connect()
 
 
-def test_writes_are_newline_terminated_bytes():
-    """pyserial requires bytes; Marlin requires newline-terminated commands."""
+def test_writes_are_newline_terminated_checksummed_bytes():
+    """pyserial requires bytes; Marlin requires newline-terminated commands.
+    Lines carry Marlin line numbers and checksums so the printer can detect
+    corruption instead of silently dropping commands (#17, #21)."""
     port = FakeSerial()
     sender = MarlinSender(port)
     sender.connect()
     sender.send_line("G28")
-    assert port.raw_written[-1] == b"G28\n"
+    raw = port.raw_written[-1]
+    assert raw.endswith(b"\n")
+    assert re.match(rb"^N\d+ G28\*\d+\n$", raw)
+
+
+def test_corrupted_line_is_resent_after_resend_request():
+    """A duplicated byte on the wire (the CH340 corruption in #21) must be
+    caught by the printer's checksum and the line resent — not dropped."""
+    port = CorruptingPort(corrupt_index=2)  # first command after the handshake
+    sender = MarlinSender(port)
+    sender.connect()
+    sender.send_line("G28")
+    # the corrupted original plus the resent line hit the wire; only the
+    # resent one is recorded as an executed command
+    assert len([raw for raw in port.raw_written if b"G28" in raw]) == 2
+    assert port.written.count("G28") == 1
+
+
+def test_unknown_command_is_retried_not_dropped():
+    """Marlin acks a refused command with only an echo:Unknown command; a
+    dropped pen-lift draws stray lines (#21), so the command is retried
+    with a fresh line number until the printer accepts it."""
+    port = FakeSerial(responses={
+        "G0 Z1.5": ['echo:Unknown command: "GG0 Z1.5"', "ok", "ok"],
+    })
+    sender = MarlinSender(port)
+    sender.connect()
+    sender.send_line("G0 Z1.5")
+    assert port.written.count("G0 Z1.5") == 2
+
+
+def test_unknown_command_exhaustion_fails_cleanly():
+    port = FakeSerial(responses={
+        "G0 Z1.5": ['echo:Unknown command: "GG0 Z1.5"', "ok"] * 10,
+    })
+    sender = MarlinSender(port)
+    sender.connect()
+    with pytest.raises(SenderError, match="refused"):
+        sender.send_line("G0 Z1.5")
+
+
+def test_pipelined_unknown_command_retried_before_fresh_lines():
+    """Mid-stream, a refused command is re-queued at the front and no fresh
+    lines are fed until it has run: later moves must not depend on a
+    pen-state command that never executed."""
+    port = FakeSerial(responses={
+        "G0 Z1.5": ['echo:Unknown command: "GG0 Z1.5"', "ok", "ok"],
+    })
+    sender = MarlinSender(port)
+    sender.connect()
+    port.written.clear()
+    sender.run_gcode(
+        ["G0 Z1.5", "G0 X10", "G0 X20", "G0 X30", "G0 X40"],
+        on_progress=lambda i, n: None,
+        stop=lambda: False,
+    )
+    assert port.written.count("G0 Z1.5") == 2
+    # window is 4: the retry is written before the 5th line is fed
+    assert port.written[4] == "G0 Z1.5"
+    assert port.written[5] == "G0 X40"
+
+
+def test_pipelined_corruption_resent_with_same_line_number():
+    """On the printer's Resend: request the line is rewritten with its
+    original number, keeping the printer's expected-number count aligned."""
+    port = CorruptingPort(corrupt_index=2)
+    sender = MarlinSender(port)
+    sender.connect()
+    sender.run_gcode(
+        ["G0 X0", "G0 X1", "G0 X2"],
+        on_progress=lambda i, n: None,
+        stop=lambda: False,
+    )
+    resent = [raw for raw in port.raw_written if b"G0 X0" in raw]
+    assert len(resent) == 2
+    # both the corrupted original and the resend carry the same line number
+    numbers = {raw.split(b" ")[0] for raw in resent}
+    assert len(numbers) == 1
 
 
 def test_missing_serial_device_gives_actionable_error(monkeypatch, tmp_path):
@@ -148,6 +246,50 @@ def test_missing_serial_device_gives_actionable_error(monkeypatch, tmp_path):
         time.sleep(0.02)
     assert job["status"] == "failed"
     assert "restart the app" in job["error"]
+
+
+def test_active_job_returns_running_job_then_none():
+    """The UI reattaches to a running Job after a page reload (#15):
+    active_job() reports it while it runs and None once it finishes."""
+    import threading
+    import time
+
+    from app.jobs import JobRunner
+
+    from app.db import Database
+
+    class HangingSender:
+        def __init__(self):
+            self.release = threading.Event()
+
+        def connect(self):
+            pass
+
+        def run_gcode(self, lines, on_progress, stop, safe_z=1.5):
+            self.release.wait(timeout=5)
+
+        def close(self):
+            pass
+
+    db = Database(":memory:")
+    sender = HangingSender()
+    runner = JobRunner(db, lambda: sender)
+    job_id = runner.start(1, ["G0 X0"])
+    try:
+        for _ in range(100):
+            if db.get_job(job_id)["status"] == "running":
+                break
+            time.sleep(0.02)
+        active = runner.active_job()
+        assert active is not None and active["id"] == job_id
+        assert active["status"] == "running"
+    finally:
+        sender.release.set()
+    for _ in range(100):
+        if not runner.busy():
+            break
+        time.sleep(0.02)
+    assert runner.active_job() is None
 
 
 def test_stale_jobs_failed_on_startup():
@@ -226,6 +368,12 @@ class SilentUntilNPort:
         return ""
 
 
+def bare(line: str) -> str:
+    """Strip Marlin's N/checksum wrapper from a wire-format line."""
+    m = re.match(r"^N\d+ (.*)\*\d+$", line)
+    return m.group(1) if m else line
+
+
 def test_timeout_resends_command_and_recovers():
     """A lost ok (serial corruption) must be recovered by resending the
     command — moves are idempotent for a pen plotter."""
@@ -233,7 +381,7 @@ def test_timeout_resends_command_and_recovers():
     port.open()
     sender = MarlinSender(port, timeout=0.3)
     sender.send_line("G28")
-    assert port.written == ["G28", "G28"]
+    assert [bare(w) for w in port.written] == ["G28", "G28"]
 
 
 def test_resend_exhaustion_fails_without_m112():
@@ -244,7 +392,7 @@ def test_resend_exhaustion_fails_without_m112():
     sender = MarlinSender(port, timeout=0.3)
     with pytest.raises(SenderError):
         sender.send_line("G28")
-    assert port.written == ["G28", "G28", "G28"]
+    assert [bare(w) for w in port.written] == ["G28", "G28", "G28"]
     assert "M112" not in port.written
 
 
